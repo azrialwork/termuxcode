@@ -236,6 +236,7 @@ jobs:
           set -euo pipefail
           mkdir -p extract
           tar -xzf pkg/termuxcode-*-x64.tar.gz -C extract
+          echo "SMOKE_VERSION=${UPSTREAM_TAG#v}" >> "$GITHUB_ENV"
 
       - uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -245,34 +246,7 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -noaudio
-          script: |
-            set -euo pipefail
-            adb push extract/lib/termuxcode/opencode /data/local/tmp/opencode
-            adb push extract/lib/termuxcode/librust_pty.so /data/local/tmp/librust_pty.so
-            adb push extract/lib/termuxcode/libopentui.so /data/local/tmp/libopentui.so
-            adb shell chmod 755 /data/local/tmp/opencode
-
-            version=$(adb shell "HOME=/data/local/tmp BUN_PTY_LIB=/data/local/tmp/librust_pty.so /data/local/tmp/opencode --version")
-            echo "version: $version"
-            echo "$version" | grep -q "1.19.3"
-
-            adb shell "HOME=/data/local/tmp BUN_PTY_LIB=/data/local/tmp/librust_pty.so /data/local/tmp/opencode serve --port 4096 >/data/local/tmp/serve.log 2>&1" &
-            server_pid=$!
-            adb forward tcp:4096 tcp:4096
-            code=000
-            for _ in $(seq 1 30); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4096/global/health || true)
-              [ "$code" = "200" ] && break
-              sleep 2
-            done
-            if [ "$code" != "200" ]; then
-              adb shell cat /data/local/tmp/serve.log || true
-              echo "health check failed: $code"
-              kill "$server_pid" 2>/dev/null || true
-              exit 1
-            fi
-            curl -fsS http://127.0.0.1:4096/global/health
-            kill "$server_pid" 2>/dev/null || true
+          script: bash scripts/smoke.sh extract/lib/termuxcode
 
   release:
     name: release
