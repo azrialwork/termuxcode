@@ -71,32 +71,35 @@ Only a tagged release publishes the slim package. The default `latest` installer
 still selects the full package; `TERMUXCODE_PROFILE=slim` selects the slim one
 once such a release exists.
 
-## Slim after the first trim
+## Slim, Termux-only tree
 
-Build `1.19.3+slim1` (run `39668526806`, artifact `package-slim-arm64`), measured
-from an extracted `.deb` under a throwaway prefix.
+Build `1.19.3+slim1` (run `39674869021`, artifact `package-slim-arm64`), measured
+from an extracted `.deb` under a throwaway prefix. The patch now deletes the
+self-update machinery, managed preferences, and every non-Termux branch instead
+of stubbing them.
 
 | metric | full | slim |
 | --- | --- | --- |
-| release `.deb` | 47,617,298 B | 47,617,208 B |
-| installed files | 180.3 MiB | 180.3 MiB |
-| compiled binary | 174,658,760 B | 174,658,760 B |
-| bundle JS | 32,783,125 B | 32,773,914 B |
-| `upgrade`/`uninstall` modules | present | absent |
+| release `.deb` | 47,617,298 B | 47,524,354 B |
+| installed files | 180.3 MiB | 179.3 MiB |
+| compiled binary | 174,658,760 B | 173,610,184 B |
+| bundle JS | 32,786,201 B | 32,706,591 B |
 
-Startup and idle memory were measured twice against the installed full build:
+Startup from the extracted package: `--version` 2.02 s, first output 3.44 s, TUI
+first frame 13.69 s on one warm run, in line with the full build's 13.4-14.6 s
+range. Idle PSS was 605.4 MiB, inside the 456-740 MiB spread already observed,
+so it says nothing.
 
-| invocation | slim TUI frame | slim PSS | full TUI frame | full PSS |
-| --- | --- | --- | --- | --- |
-| first | 14.58 s | 461.9 MiB | 14.09 s | 502.6 MiB |
-| second | 14.16 s | 530-698 MiB | 14.55 s | 594-740 MiB |
+The binary delta is exactly 1,048,576 B. Bun pads the single-file executable, so
+that number is alignment, not deleted code; treat the bundle delta (79,610 B) as
+the honest size of the removal. None of the removed modules was imported at boot,
+which is why startup and memory stay inside the noise band. No budget is filled
+in `profiles/slim.env` until a run can be reproduced.
 
-The first pair suggested a 40 MiB win; the second pair reversed and widened it.
-Idle PSS on this device drifts by more than 40% between invocations, so neither
-pair proves anything about memory. Only the bundle delta is attributable to the
-patch, and it is 9,211 bytes: removing two commands and the non-Termux branches
-does not move the runtime heap, because none of that code is loaded at boot.
-No budget is filled in `profiles/slim.env` until a run can be reproduced.
+The CI bundle-map check fails the slim build if any of `cli/cmd/upgrade.ts`,
+`cli/upgrade.ts`, `installation/index.ts`, `config/managed.ts`,
+`context/update-notification.tsx`, `component/dialog-update.tsx`,
+`terminal-win32.ts` or `util/path.ts` reappears in the slim bundle.
 
 ## What this says
 
