@@ -36,9 +36,25 @@ The package owns only those four paths. It never installs `$PREFIX/bin/opencode`
 so an existing OpenCode installation keeps working next to it. `scripts/package.sh`
 fails the build if the archive contains any other file.
 
-State is shared: `termuxcode` uses the same `~/.config/opencode` and
+State is shared by default: `termuxcode` uses the same `~/.config/opencode` and
 `~/.local/share/opencode` directories as upstream OpenCode. Running it can
 migrate that data to `1.19.3`, which an older installed binary may not read.
+
+### Debug with isolated state
+
+Set `TERMUXCODE_HOME` to keep config, auth, sessions, cache and temp files in a
+private directory:
+
+```sh
+TERMUXCODE_HOME=$PREFIX/var/termuxcode-debug termuxcode
+```
+
+The launcher creates that directory and points `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` and `TMPDIR` at it, so the
+run cannot read or migrate state used by another OpenCode installation. Auth is
+isolated too, so log in again inside the debug directory. CI runs the smoke test
+through the packaged launcher with this variable set and fails if anything
+leaks into the real `HOME`.
 
 The launcher exports the paths and Android-safe defaults:
 
@@ -86,8 +102,9 @@ CI is the build system. The `build` workflow:
    preview version string);
 3. verifies each binary with `readelf` (architecture, no glibc dependencies,
    16 KB compatible library segments);
-4. boots the x64 build on an Android 28 x86_64 emulator and checks
-   `--version` plus `/global/health`;
+4. boots the x64 build on an Android 28 x86_64 emulator, runs it through the
+   packaged launcher with `TERMUXCODE_HOME` isolation, and checks `--version`,
+   `/global/health`, and that no state leaked outside the isolated directory;
 5. publishes a Termux `.deb` and tarballs, asserting the archive contains only
    the four paths above.
 

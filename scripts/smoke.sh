@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# Runs the packaged CLI on an already booted Android emulator: --version and health endpoint.
+# Runs the packaged launcher on an already booted Android emulator, through the
+# same layout the .deb installs, with TERMUXCODE_HOME isolation enabled.
 set -euo pipefail
 
 lib_dir="${1:?usage: smoke.sh <lib-dir>}"
-# Bun maps os.tmpdir() to /data/local/tmp on Android; keeping the binary elsewhere
-# avoids colliding with opencode's own tmp dir (/data/local/tmp/opencode).
 tmp=/data/local/tmp
-bin_dir=$tmp/termuxcode
-home_dir=$tmp/home
-env_prefix="HOME=$home_dir BUN_PTY_LIB=$bin_dir/librust_pty.so OPENTUI_LIB_PATH=$bin_dir/libopentui.so"
-env_prefix="$env_prefix OPENCODE_DISABLE_FFF=1 OPENCODE_DISABLE_AUTOUPDATE=1"
-env_prefix="$env_prefix OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER=1"
+root=$tmp/termuxcode-test
+prefix=$root/usr
+home_dir=$root/home
+debug_home=$root/debug
+# PREFIX points the launcher at the staged tree; TERMUXCODE_HOME keeps every
+# XDG location private so this run cannot touch an opencode installation.
+env_prefix="PREFIX=$prefix HOME=$home_dir TERMUXCODE_HOME=$debug_home"
 
-adb shell mkdir -p "$bin_dir" "$home_dir"
-adb push "$lib_dir/termuxcode" "$bin_dir/termuxcode"
-adb push "$lib_dir/librust_pty.so" "$bin_dir/librust_pty.so"
-adb push "$lib_dir/libopentui.so" "$bin_dir/libopentui.so"
-adb shell chmod 755 "$bin_dir/termuxcode"
+adb shell mkdir -p "$prefix/bin" "$prefix/lib/termuxcode" "$home_dir"
+adb push "$lib_dir/termuxcode" "$prefix/bin/termuxcode"
+adb push "$lib_dir/termuxcode" "$prefix/lib/termuxcode/termuxcode"
+adb push "$lib_dir/librust_pty.so" "$prefix/lib/termuxcode/librust_pty.so"
+adb push "$lib_dir/libopentui.so" "$prefix/lib/termuxcode/libopentui.so"
+adb shell chmod 755 "$prefix/bin/termuxcode" "$prefix/lib/termuxcode/termuxcode"
 
-version=$(adb shell "$env_prefix $bin_dir/termuxcode --version")
+# The launcher's shebang points at Termux; run it through the device shell.
+version=$(adb shell "$env_prefix sh $prefix/bin/termuxcode --version")
 echo "version: $version"
 case "$version" in
 *"$SMOKE_VERSION"*) ;;
@@ -29,7 +32,7 @@ case "$version" in
 esac
 
 # nohup keeps the server alive after the adb shell session ends.
-adb shell "nohup env $env_prefix $bin_dir/termuxcode serve --port 4096 --print-logs >$home_dir/serve.log 2>&1 &" >/dev/null
+adb shell "nohup env $env_prefix sh $prefix/bin/termuxcode serve --port 4096 --print-logs >$home_dir/serve.log 2>&1 &" >/dev/null
 adb forward tcp:4096 tcp:4096
 
 # A debug emulator takes minutes to start a 170 MB binary; wait up to 10 minutes.
@@ -58,4 +61,14 @@ if [ "$code" != "200" ]; then
 fi
 
 curl -fsS http://127.0.0.1:4096/global/health
+echo
+
+# Isolation proof: state landed under TERMUXCODE_HOME, not the real HOME.
+adb shell "test -d $debug_home/data/opencode"
+if adb shell "test -e $home_dir/.config/opencode -o -e $home_dir/.local/share/opencode"; then
+  echo "isolation failed: opencode state leaked into HOME" >&2
+  exit 1
+fi
+echo "isolation: state confined to $debug_home"
+
 adb shell pkill -f "termuxcode serve" || true

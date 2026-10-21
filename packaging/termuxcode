@@ -10,6 +10,18 @@ export OPENCODE_DISABLE_FFF=1
 export OPENCODE_DISABLE_AUTOUPDATE=1
 export OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER=1
 
+# Optional full state isolation for debugging: point every XDG location at a
+# private root so a test run cannot read or migrate the real opencode state.
+if [ -n "${TERMUXCODE_HOME:-}" ]; then
+  mkdir -p "$TERMUXCODE_HOME/config" "$TERMUXCODE_HOME/data" \
+    "$TERMUXCODE_HOME/cache" "$TERMUXCODE_HOME/state" "$TERMUXCODE_HOME/tmp"
+  export XDG_CONFIG_HOME="$TERMUXCODE_HOME/config"
+  export XDG_DATA_HOME="$TERMUXCODE_HOME/data"
+  export XDG_CACHE_HOME="$TERMUXCODE_HOME/cache"
+  export XDG_STATE_HOME="$TERMUXCODE_HOME/state"
+  export TMPDIR="$TERMUXCODE_HOME/tmp"
+fi
+
 for file in "$LIBDIR/termuxcode" "$OPENTUI_LIB_PATH" "$BUN_PTY_LIB"; do
   if [ ! -e "$file" ]; then
     echo "termuxcode: missing $file" >&2
