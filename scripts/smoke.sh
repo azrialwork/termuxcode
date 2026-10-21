@@ -3,7 +3,8 @@
 # same layout the .deb installs, with TERMUXCODE_HOME isolation enabled.
 set -euo pipefail
 
-lib_dir="${1:?usage: smoke.sh <lib-dir>}"
+pkg_dir="${1:?usage: smoke.sh <package-root>}"
+lib_dir="$pkg_dir/lib/termuxcode"
 tmp=/data/local/tmp
 root=$tmp/termuxcode-test
 prefix=$root/usr
@@ -14,7 +15,7 @@ debug_home=$root/debug
 env_prefix="PREFIX=$prefix HOME=$home_dir TERMUXCODE_HOME=$debug_home"
 
 adb shell mkdir -p "$prefix/bin" "$prefix/lib/termuxcode" "$home_dir"
-adb push "$lib_dir/termuxcode" "$prefix/bin/termuxcode"
+adb push "$pkg_dir/bin/termuxcode" "$prefix/bin/termuxcode"
 adb push "$lib_dir/termuxcode" "$prefix/lib/termuxcode/termuxcode"
 adb push "$lib_dir/librust_pty.so" "$prefix/lib/termuxcode/librust_pty.so"
 adb push "$lib_dir/libopentui.so" "$prefix/lib/termuxcode/libopentui.so"
@@ -65,10 +66,12 @@ echo
 
 # Isolation proof: state landed under TERMUXCODE_HOME, not the real HOME.
 adb shell "test -d $debug_home/data/opencode"
-if adb shell "test -e $home_dir/.config/opencode -o -e $home_dir/.local/share/opencode"; then
-  echo "isolation failed: opencode state leaked into HOME" >&2
-  exit 1
-fi
+for leaked in "$home_dir/.config/opencode" "$home_dir/.local/share/opencode"; do
+  if adb shell "test -e $leaked"; then
+    echo "isolation failed: $leaked exists" >&2
+    exit 1
+  fi
+done
 echo "isolation: state confined to $debug_home"
 
 adb shell pkill -f "termuxcode serve" || true
