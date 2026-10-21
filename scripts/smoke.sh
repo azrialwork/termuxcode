@@ -32,9 +32,10 @@ esac
 adb shell "nohup env $env_prefix $bin_dir/opencode serve --port 4096 --print-logs >$home_dir/serve.log 2>&1 &" >/dev/null
 adb forward tcp:4096 tcp:4096
 
+# A debug emulator takes minutes to start a 170 MB binary; wait up to 10 minutes.
 listening=0
 code=000
-for _ in $(seq 1 60); do
+for i in $(seq 1 300); do
   if [ "$listening" = "0" ] && adb shell "grep -q 'server listening' $home_dir/serve.log" 2>/dev/null; then
     listening=1
     adb shell cat "$home_dir/serve.log"
@@ -42,6 +43,10 @@ for _ in $(seq 1 60); do
   if [ "$listening" = "1" ]; then
     code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4096/global/health || true)
     [ "$code" = "200" ] && break
+  fi
+  if [ $((i % 30)) -eq 0 ]; then
+    echo "waiting for server ($((i * 2))s)" >&2
+    adb shell "tail -n 3 $home_dir/serve.log" >&2 || true
   fi
   sleep 2
 done
