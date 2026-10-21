@@ -16,12 +16,17 @@ FORCE="${TERMUXCODE_FORCE:-0}"
 
 # ---------------------------------------------------------------- ui --------
 
-UI=1
+# Human output goes to the terminal even when the script arrives through a pipe;
+# fd 3 keeps it separate from command output. Without a terminal, use stdout.
 if [ -c /dev/tty ] && { : >/dev/tty; } 2>/dev/null; then
-  UI=/dev/tty
+  exec 3>/dev/tty
+  HAS_TTY=1
+else
+  exec 3>&1
+  HAS_TTY=0
 fi
 
-if { [ "$UI" = /dev/tty ] || [ -t 1 ]; } && [ -z "${NO_COLOR:-}" ]; then
+if { [ "$HAS_TTY" = 1 ] || [ -t 1 ]; } && [ -z "${NO_COLOR:-}" ]; then
   B=$'\033[1m'
   D=$'\033[2m'
   R=$'\033[0m'
@@ -33,7 +38,7 @@ else
   B='' D='' R='' GREEN='' RED='' YELLOW='' CYAN=''
 fi
 
-say() { printf '%s\n' "$*" >"$UI"; }
+say() { printf '%s\n' "$*" >&3; }
 
 rep() {
   local unit=$1 count=$2 out=''
@@ -52,14 +57,14 @@ step_done() {
   dots=$(rep '.' "$pad")
   tag=$(printf '[%-4s]' "$state")
   printf "  ${D}[%s]${R} ${B}%s${R} %s ${color}%s${R} %s\n" \
-    "$num" "$label" "$dots" "$tag" "$detail" >"$UI"
+    "$num" "$label" "$dots" "$tag" "$detail" >&3
 }
 
 step_ok() { step_done "$1" "$2" "ok" "$GREEN" "${3:-}"; }
 step_skip() { step_done "$1" "$2" "skip" "$YELLOW" "${3:-}"; }
 
 BOX_W=58
-box_rule() { printf '  +%s+\n' "$(rep '-' $((BOX_W + 4)))" >"$UI"; }
+box_rule() { printf '  +%s+\n' "$(rep '-' $((BOX_W + 4)))" >&3; }
 
 # One content row. text is always <= BOX_W wide, so the border line stays put.
 box_row() {
@@ -67,7 +72,7 @@ box_row() {
   # Clamp so a stray long string can never push the right border out of line.
   [ "${#text}" -gt "$BOX_W" ] && text="${text:0:BOX_W}"
   pad=$((BOX_W - ${#text}))
-  printf '  |  %s%s  |\n' "$text" "$(rep ' ' "$pad")" >"$UI"
+  printf '  |  %s%s  |\n' "$text" "$(rep ' ' "$pad")" >&3
 }
 
 # Paragraph row: wraps on spaces, hard-splits overlong words. Never overflows.
@@ -98,8 +103,8 @@ box_line() {
 
 die() {
   say ""
-  printf '  %s[fail]%s %s\n' "$RED" "$R" "$1" >"$UI"
-  [ $# -gt 1 ] && printf '         %s%s%s\n' "$D" "$2" "$R" >"$UI"
+  printf '  %s[fail]%s %s\n' "$RED" "$R" "$1" >&3
+  [ $# -gt 1 ] && printf '         %s%s%s\n' "$D" "$2" "$R" >&3
   say ""
   exit 1
 }
@@ -107,7 +112,7 @@ die() {
 TMP=$(mktemp -d)
 chmod 700 "$TMP"
 trap 'rm -rf "$TMP"' EXIT
-trap 'say ""; printf "  %s[abort]%s interrupted\n\n" "$RED" "$R" >"$UI"; exit 130' INT
+trap 'say ""; printf "  %s[abort]%s interrupted\n\n" "$RED" "$R" >&3; exit 130' INT
 start=$SECONDS
 
 # -------------------------------------------------------------- banner ------
@@ -179,15 +184,15 @@ if [ "$skip_install" = 0 ]; then
   if ! command -v rg >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
     say "  ${D}installing ripgrep and git${R}"
     pkg install -y ripgrep git >"$TMP/pkg.log" 2>&1 || {
-      tail -n 15 "$TMP/pkg.log" >"$UI" || true
+      tail -n 15 "$TMP/pkg.log" >&3 || true
       die "Could not install ripgrep and git"
     }
   fi
 
   say "  ${D}downloading ${deb} (v${version})${R}"
 
-  if [ "$UI" = /dev/tty ]; then
-    curl -fL --retry 3 --progress-bar "$RELEASES/latest/download/$deb" -o "$TMP/$deb" 2>"$UI" ||
+  if [ "$HAS_TTY" = 1 ]; then
+    curl -fL --retry 3 --progress-bar "$RELEASES/latest/download/$deb" -o "$TMP/$deb" 2>&3 ||
       die "Download failed"
   else
     curl -fsSL --retry 3 "$RELEASES/latest/download/$deb" -o "$TMP/$deb" ||
@@ -207,7 +212,7 @@ fi
 
 if [ "$skip_install" = 0 ]; then
   dpkg -i "$TMP/$deb" >"$TMP/dpkg.log" 2>&1 || {
-    tail -n 20 "$TMP/dpkg.log" >"$UI" || true
+    tail -n 20 "$TMP/dpkg.log" >&3 || true
     die "dpkg failed" "Try: pkg install ripgrep git, then rerun."
   }
 
