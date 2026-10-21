@@ -67,8 +67,20 @@ jobs:
         run: |
           set -euo pipefail
           sysroot="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          test -d "$sysroot"
-          zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast --sysroot "$sysroot"
+          triple="${{ matrix.zig_target }}"
+          api=28
+          test -d "$sysroot/usr/include/$triple"
+          test -d "$sysroot/usr/lib/$triple/$api"
+          libc_file="$RUNNER_TEMP/android-libc.txt"
+          {
+            echo "include_dir=$sysroot/usr/include/$triple"
+            echo "sys_include_dir=$sysroot/usr/include"
+            echo "crt_dir=$sysroot/usr/lib/$triple/$api"
+            echo "msvc_lib_dir="
+            echo "kernel32_lib_dir="
+            echo "gcc_dir="
+          } > "$libc_file"
+          zig build -Dtarget=$triple -Doptimize=ReleaseFast --libc "$libc_file"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
