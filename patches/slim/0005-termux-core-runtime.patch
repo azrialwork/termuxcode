@@ -1,0 +1,763 @@
+diff --git a/packages/core/src/cross-spawn-spawner.ts b/packages/core/src/cross-spawn-spawner.ts
+index 6ea9022..72e7557 100644
+--- a/packages/core/src/cross-spawn-spawner.ts
++++ b/packages/core/src/cross-spawn-spawner.ts
+@@ -151,17 +151,15 @@ export const make = Effect.gen(function* () {
+     serr: ChildProcess.StderrConfig,
+     extra: ReadonlyArray<{ fd: number; config: ChildProcess.AdditionalFdConfig }>,
+   ): NodeChildProcess.StdioOptions => {
+-    const pipe = (x: NodeChildProcess.IOType | undefined) =>
+-      process.platform === "win32" && x === "pipe" ? "overlapped" : x
+     const arr: Array<NodeChildProcess.IOType | undefined> = [
+-      pipe(input(sin.stream)),
+-      pipe(output(sout.stream)),
+-      pipe(output(serr.stream)),
++      input(sin.stream),
++      output(sout.stream),
++      output(serr.stream),
+     ]
+     if (extra.length === 0) return arr as NodeChildProcess.StdioOptions
+     const max = extra.reduce((acc, x) => Math.max(acc, x.fd), 2)
+     for (let i = 3; i <= max; i++) arr[i] = "ignore"
+-    for (const x of extra) arr[x.fd] = pipe("pipe")
++    for (const x of extra) arr[x.fd] = "pipe"
+     return arr as NodeChildProcess.StdioOptions
+   }
+ 
+@@ -294,15 +292,6 @@ export const make = Effect.gen(function* () {
+     proc: NodeChildProcess.ChildProcess,
+     signal: NodeJS.Signals,
+   ) => {
+-    if (globalThis.process.platform === "win32") {
+-      return Effect.callback<void, PlatformError.PlatformError>((resume) => {
+-        NodeChildProcess.exec(`taskkill /pid ${proc.pid} /T /F`, { windowsHide: true }, (err) => {
+-          if (err) return resume(Effect.fail(toPlatformError("kill", toError(err), command)))
+-          resume(Effect.void)
+-        })
+-      })
+-    }
+-
+     return Effect.try({
+       try: () => {
+         globalThis.process.kill(-proc.pid!, signal)
+@@ -375,16 +364,14 @@ export const make = Effect.gen(function* () {
+               cwd: dir,
+               env: env(command.options),
+               stdio: stdios(sin, sout, serr, extra),
+-              detached: command.options.detached ?? process.platform !== "win32",
++              detached: command.options.detached ?? true,
+               shell: command.options.shell,
+-              windowsHide: process.platform === "win32",
+             }),
+             Effect.fnUntraced(function* ([proc, signal]) {
+               const done = yield* Deferred.isDone(signal)
+               const kill = timeout(proc, command, command.options)
+               if (done) {
+                 const [code] = yield* Deferred.await(signal)
+-                if (process.platform === "win32") return yield* Effect.void
+                 if (code !== 0 && Predicate.isNotNull(code)) return yield* Effect.ignore(kill(killGroup))
+                 return yield* Effect.void
+               }
+diff --git a/packages/core/src/database/path.ts b/packages/core/src/database/path.ts
+index 379d5f8..d5c3c05 100644
+--- a/packages/core/src/database/path.ts
++++ b/packages/core/src/database/path.ts
+@@ -2,26 +2,11 @@ import nodePath from "path"
+ import { customType } from "drizzle-orm/sqlite-core"
+ import { AbsolutePath } from "../schema"
+ 
+-function storagePath(input: string) {
+-  if (process.platform !== "win32") return input
+-  return input.replaceAll("\\", "/")
+-}
+-
+-function isWindowsStoragePath(input: string) {
+-  return /^[A-Za-z]:\//.test(input) || input.startsWith("//")
+-}
+-
+ function absolute(input: string) {
+-  const result = storagePath(input)
+-  if (!nodePath.posix.isAbsolute(result) && !(process.platform === "win32" && isWindowsStoragePath(result))) {
++  if (!nodePath.posix.isAbsolute(input)) {
+     throw new Error(`Path is not absolute: ${input}`)
+   }
+-  return result
+-}
+-
+-function toPlatform(input: string) {
+-  if (process.platform !== "win32" || !isWindowsStoragePath(input)) return input
+-  return input.replaceAll("/", "\\")
++  return input
+ }
+ 
+ export const absoluteColumn = customType<{
+@@ -36,7 +21,7 @@ export const absoluteColumn = customType<{
+     return absolute(input)
+   },
+   fromDriver(input) {
+-    return AbsolutePath.make(toPlatform(absolute(input)))
++    return AbsolutePath.make(absolute(input))
+   },
+ })
+ 
+@@ -54,7 +39,7 @@ export const directoryColumn = customType<{
+     return input ? absolute(input) : input
+   },
+   fromDriver(input) {
+-    return input ? toPlatform(absolute(input)) : input
++    return input ? absolute(input) : input
+   },
+ })
+ 
+@@ -67,10 +52,10 @@ export const pathColumn = customType<{
+     return "text"
+   },
+   toDriver(input) {
+-    return storagePath(input)
++    return input
+   },
+   fromDriver(input) {
+-    return storagePath(input)
++    return input
+   },
+ })
+ 
+@@ -86,6 +71,6 @@ export const absoluteArrayColumn = customType<{
+     return JSON.stringify(input.map(absolute))
+   },
+   fromDriver(input) {
+-    return (JSON.parse(input) as string[]).map((item) => AbsolutePath.make(toPlatform(absolute(item))))
++    return (JSON.parse(input) as string[]).map((item) => AbsolutePath.make(absolute(item)))
+   },
+ })
+diff --git a/packages/core/src/filesystem/protected.ts b/packages/core/src/filesystem/protected.ts
+index a7646df..dee80af 100644
+--- a/packages/core/src/filesystem/protected.ts
++++ b/packages/core/src/filesystem/protected.ts
+@@ -1,52 +1,10 @@
+-import os from "os"
+-import path from "path"
+-
+-const home = os.homedir()
+-
+-const DARWIN_HOME = [
+-  "Music",
+-  "Pictures",
+-  "Movies",
+-  "Downloads",
+-  "Desktop",
+-  "Documents",
+-  "Public",
+-  "Applications",
+-  "Library",
+-]
+-
+-const DARWIN_LIBRARY = [
+-  "Application Support/AddressBook",
+-  "Calendars",
+-  "Mail",
+-  "Messages",
+-  "Safari",
+-  "Cookies",
+-  "Application Support/com.apple.TCC",
+-  "PersonalizationPortrait",
+-  "Metadata/CoreSpotlight",
+-  "Suggestions",
+-]
+-
+-const DARWIN_ROOT = ["/.DocumentRevisions-V100", "/.Spotlight-V100", "/.Trashes", "/.fseventsd"]
+-const WIN32_HOME = ["AppData", "Downloads", "Desktop", "Documents", "Pictures", "Music", "Videos", "OneDrive"]
+-
+ /** Directory basenames to skip when scanning the home directory. */
+ export function names(): ReadonlySet<string> {
+-  if (process.platform === "darwin") return new Set(DARWIN_HOME)
+-  if (process.platform === "win32") return new Set(WIN32_HOME)
+   return new Set()
+ }
+ 
+ /** Absolute paths that should never be watched, stated, or scanned. */
+ export function paths(): string[] {
+-  if (process.platform === "darwin")
+-    return [
+-      ...DARWIN_HOME.map((name) => path.join(home, name)),
+-      ...DARWIN_LIBRARY.map((name) => path.join(home, "Library", name)),
+-      ...DARWIN_ROOT,
+-    ]
+-  if (process.platform === "win32") return WIN32_HOME.map((name) => path.join(home, name))
+   return []
+ }
+ 
+diff --git a/packages/core/src/filesystem/watcher.ts b/packages/core/src/filesystem/watcher.ts
+index c5e2063..e9cdea8 100644
+--- a/packages/core/src/filesystem/watcher.ts
++++ b/packages/core/src/filesystem/watcher.ts
+@@ -26,9 +26,7 @@ export const Event = FileSystemWatcher.Event
+ const watcher = lazy((): typeof import("@parcel/watcher") | undefined => {
+   try {
+     const libc = typeof OPENCODE_LIBC === "undefined" ? undefined : OPENCODE_LIBC
+-    const binding = require(
+-      `@parcel/watcher-${process.platform}-${process.arch}${process.platform === "linux" ? `-${libc || "glibc"}` : ""}`,
+-    )
++    const binding = require(`@parcel/watcher-linux-${process.arch}-${libc || "glibc"}`)
+     return createWrapper(binding) as typeof import("@parcel/watcher")
+   } catch {
+     return
+@@ -36,9 +34,7 @@ const watcher = lazy((): typeof import("@parcel/watcher") | undefined => {
+ })
+ 
+ function getBackend() {
+-  if (process.platform === "win32") return "windows"
+-  if (process.platform === "darwin") return "fs-events"
+-  if (process.platform === "linux") return "inotify"
++  return "inotify"
+ }
+ 
+ function protecteds(dir: string) {
+@@ -64,7 +60,7 @@ const layer = Layer.effect(
+     if (!backend) {
+       yield* Effect.logError("watcher backend not supported", {
+         directory: location.directory,
+-        platform: process.platform,
++        platform: "android",
+       })
+       return Service.of({})
+     }
+@@ -72,7 +68,7 @@ const layer = Layer.effect(
+     const w = watcher()
+     if (!w) return Service.of({})
+ 
+-    yield* Effect.logInfo("watcher backend", { directory: location.directory, platform: process.platform, backend })
++    yield* Effect.logInfo("watcher backend", { directory: location.directory, platform: "android", backend })
+     const events = yield* EventV2.Service
+     const fs = yield* FSUtil.Service
+     const git = yield* Git.Service
+diff --git a/packages/core/src/flag/flag.ts b/packages/core/src/flag/flag.ts
+index a0eb78a..d075391 100644
+--- a/packages/core/src/flag/flag.ts
++++ b/packages/core/src/flag/flag.ts
+@@ -31,7 +31,7 @@ export const Flag = {
+   OPENCODE_FAKE_VCS: process.env["OPENCODE_FAKE_VCS"],
+   OPENCODE_SERVER_PASSWORD: process.env["OPENCODE_SERVER_PASSWORD"],
+   OPENCODE_SERVER_USERNAME: process.env["OPENCODE_SERVER_USERNAME"],
+-  OPENCODE_DISABLE_FFF: fff === undefined ? process.platform === "win32" : truthy("OPENCODE_DISABLE_FFF"),
++  OPENCODE_DISABLE_FFF: truthy("OPENCODE_DISABLE_FFF"),
+ 
+   // Experimental
+   OPENCODE_EXPERIMENTAL_FILEWATCHER: Config.boolean("OPENCODE_EXPERIMENTAL_FILEWATCHER").pipe(
+@@ -40,8 +40,7 @@ export const Flag = {
+   OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: Config.boolean("OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER").pipe(
+     Config.withDefault(false),
+   ),
+-  OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT:
+-    copy === undefined ? process.platform === "win32" : truthy("OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"),
++  OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT: truthy("OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"),
+   OPENCODE_MODELS_URL: process.env["OPENCODE_MODELS_URL"],
+   OPENCODE_MODELS_PATH: process.env["OPENCODE_MODELS_PATH"],
+   OPENCODE_DB: process.env["OPENCODE_DB"],
+diff --git a/packages/core/src/fs-util.ts b/packages/core/src/fs-util.ts
+index 93a551c..5bdb086 100644
+--- a/packages/core/src/fs-util.ts
++++ b/packages/core/src/fs-util.ts
+@@ -92,7 +92,7 @@ export namespace FSUtil {
+       })
+ 
+       const resolve = Effect.fn("FileSystem.resolve")(function* (path: string) {
+-        const resolved = pathResolve(windowsPath(path))
++        const resolved = pathResolve(path)
+         return yield* fs.realPath(resolved).pipe(
+           Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(resolved)),
+           Effect.orDie,
+@@ -115,8 +115,7 @@ export namespace FSUtil {
+ 
+       const ensureDir = Effect.fn("FileSystem.ensureDir")(function* (path: string) {
+         yield* fs.makeDirectory(path, { recursive: true }).pipe(
+-          // Bun on Windows can throw EEXIST here despite recursive mode.
+-          // https://github.com/oven-sh/bun/issues/21901
++          // Bun can report AlreadyExists for recursive mkdir.
+           Effect.catchIf(
+             (error) => error.reason._tag === "AlreadyExists",
+             (error) => isDir(path).pipe(Effect.flatMap((exists) => (exists ? Effect.void : Effect.fail(error)))),
+@@ -225,44 +224,16 @@ export namespace FSUtil {
+     return lookup(p) || "application/octet-stream"
+   }
+ 
+-  export function normalizePath(p: string): string {
+-    if (process.platform !== "win32") return p
+-    const resolved = pathResolve(windowsPath(p))
+-    try {
+-      return realpathSync.native(resolved)
+-    } catch {
+-      return resolved
+-    }
+-  }
+-
+-  export function normalizePathPattern(p: string): string {
+-    if (process.platform !== "win32") return p
+-    if (p === "*") return p
+-    const match = p.match(/^(.*)[\\/]\*$/)
+-    if (!match) return normalizePath(p)
+-    const dir = /^[A-Za-z]:$/.test(match[1]) ? match[1] + "\\" : match[1]
+-    return join(normalizePath(dir), "*")
+-  }
+-
+   export function resolve(p: string): string {
+-    const resolved = pathResolve(windowsPath(p))
++    const resolved = pathResolve(p)
+     try {
+-      return normalizePath(realpathSync(resolved))
++      return realpathSync(resolved)
+     } catch (e: any) {
+-      if (e?.code === "ENOENT") return normalizePath(resolved)
++      if (e?.code === "ENOENT") return resolved
+       throw e
+     }
+   }
+ 
+-  export function windowsPath(p: string): string {
+-    if (process.platform !== "win32") return p
+-    return p
+-      .replace(/^\/([a-zA-Z]):(?:[\\/]|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      .replace(/^\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      .replace(/^\/cygdrive\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      .replace(/^\/mnt\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-  }
+-
+   export function overlaps(a: string, b: string) {
+     return contains(a, b) || contains(b, a)
+   }
+diff --git a/packages/core/src/git.ts b/packages/core/src/git.ts
+index 19dcde8..fc43485 100644
+--- a/packages/core/src/git.ts
++++ b/packages/core/src/git.ts
+@@ -981,7 +981,6 @@ function execute(cwd: string, proc: AppProcess.Interface) {
+ function resolvePath(cwd: string, value: string) {
+   const trimmed = value.replace(/[\r\n]+$/, "")
+   if (!trimmed) return cwd
+-  const normalized = FSUtil.windowsPath(trimmed)
+-  if (path.isAbsolute(normalized)) return path.normalize(normalized)
+-  return path.resolve(cwd, normalized)
++  if (path.isAbsolute(trimmed)) return path.normalize(trimmed)
++  return path.resolve(cwd, trimmed)
+ }
+diff --git a/packages/core/src/npm-config.ts b/packages/core/src/npm-config.ts
+index 896bb84..eb516f3 100644
+--- a/packages/core/src/npm-config.ts
++++ b/packages/core/src/npm-config.ts
+@@ -18,7 +18,7 @@ export const load = (dir: string) =>
+         env: { ...process.env },
+         argv: [process.execPath, process.execPath],
+         execPath: process.execPath,
+-        platform: process.platform,
++        platform: "linux",
+         definitions,
+         flatten,
+         nerfDarts,
+diff --git a/packages/core/src/npm.ts b/packages/core/src/npm.ts
+index 94e573d..4264063 100644
+--- a/packages/core/src/npm.ts
++++ b/packages/core/src/npm.ts
+@@ -42,11 +42,8 @@ export interface Interface {
+ 
+ export class Service extends Context.Service<Service, Interface>()("@opencode/Npm") {}
+ 
+-const illegal = process.platform === "win32" ? new Set(["<", ">", ":", '"', "|", "?", "*"]) : undefined
+-
+ export function sanitize(pkg: string) {
+-  if (!illegal) return pkg
+-  return Array.from(pkg, (char) => (illegal.has(char) || char.charCodeAt(0) < 32 ? "_" : char)).join("")
++  return pkg
+ }
+ 
+ const resolveEntryPoint = (name: string, dir: string): EntryPoint => {
+diff --git a/packages/core/src/open.ts b/packages/core/src/open.ts
+index 296982f..09103d0 100644
+--- a/packages/core/src/open.ts
++++ b/packages/core/src/open.ts
+@@ -1,8 +1,8 @@
+-import open from "open"
++import { spawn } from "child_process"
+ 
+ export function openUrl(input: string) {
+   const url = URL.canParse(input) ? new URL(input) : undefined
+   if (!url || (url.protocol !== "http:" && url.protocol !== "https:"))
+     return Promise.reject(new Error(`Only http and https links can be opened in the browser: ${input}`))
+-  return open(url.href)
++  return Promise.resolve(spawn("xdg-open", [url.href], { stdio: "ignore", detached: true }))
+ }
+diff --git a/packages/core/src/pty.ts b/packages/core/src/pty.ts
+index e5be4d4..a202631 100644
+--- a/packages/core/src/pty.ts
++++ b/packages/core/src/pty.ts
+@@ -173,11 +173,6 @@ const layer = Layer.effect(
+         TERM: "xterm-256color",
+         OPENCODE_TERMINAL: "1",
+       } as Record<string, string>
+-      if (process.platform === "win32") {
+-        env.LC_ALL = "C.UTF-8"
+-        env.LC_CTYPE = "C.UTF-8"
+-        env.LANG = "C.UTF-8"
+-      }
+       yield* Effect.logInfo("creating session", { id, cmd: command, args, cwd })
+       const { spawn } = yield* Effect.promise(() => pty())
+       const proc = yield* Effect.sync(() => spawn(command, args, { name: "xterm-256color", cwd, env }))
+diff --git a/packages/core/src/pty/pty.node.ts b/packages/core/src/pty/pty.node.ts
+index 54691d1..76f415f 100644
+--- a/packages/core/src/pty/pty.node.ts
++++ b/packages/core/src/pty/pty.node.ts
+@@ -4,10 +4,7 @@ import type { Opts, Proc } from "./pty"
+ export type { Disp, Exit, Opts, Proc } from "./pty"
+ 
+ export function spawn(file: string, args: string[], opts: Opts): Proc {
+-  const proc = pty.spawn(file, args, {
+-    ...opts,
+-    ...(process.platform === "win32" ? { useConptyDll: true } : {}),
+-  })
++  const proc = pty.spawn(file, args, opts)
+   return {
+     pid: proc.pid,
+     onData(listener) {
+diff --git a/packages/core/src/ripgrep/binary.ts b/packages/core/src/ripgrep/binary.ts
+index 762a8e6..22592c6 100644
+--- a/packages/core/src/ripgrep/binary.ts
++++ b/packages/core/src/ripgrep/binary.ts
+@@ -1,27 +1,9 @@
+-import path from "path"
+-import { Context, Effect, Layer, Stream } from "effect"
+-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
+-import { ChildProcess } from "effect/unstable/process"
+-import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+-import { CrossSpawnSpawner } from "../cross-spawn-spawner"
++import { Context, Effect, Layer } from "effect"
+ import { makeGlobalNode } from "../effect/app-node"
+-import { httpClient } from "../effect/app-node-platform"
+ import { FSUtil } from "../fs-util"
+-import { Global } from "../global"
+ import { which } from "../util/which"
+ 
+ export namespace RipgrepBinary {
+-  const VERSION = "15.1.0"
+-  const PLATFORM = {
+-    "arm64-darwin": { platform: "aarch64-apple-darwin", extension: "tar.gz" },
+-    "arm64-linux": { platform: "aarch64-unknown-linux-gnu", extension: "tar.gz" },
+-    "x64-darwin": { platform: "x86_64-apple-darwin", extension: "tar.gz" },
+-    "x64-linux": { platform: "x86_64-unknown-linux-musl", extension: "tar.gz" },
+-    "arm64-win32": { platform: "aarch64-pc-windows-msvc", extension: "zip" },
+-    "ia32-win32": { platform: "i686-pc-windows-msvc", extension: "zip" },
+-    "x64-win32": { platform: "x86_64-pc-windows-msvc", extension: "zip" },
+-  } as const
+-
+   interface Interface {
+     readonly filepath: Effect.Effect<string, Error>
+   }
+@@ -32,92 +14,13 @@ export namespace RipgrepBinary {
+     Service,
+     Effect.gen(function* () {
+       const fs = yield* FSUtil.Service
+-      const http = HttpClient.filterStatusOk(yield* HttpClient.HttpClient)
+-      const spawner = yield* ChildProcessSpawner
+-
+-      const run = Effect.fnUntraced(function* (command: string, args: string[]) {
+-        const handle = yield* spawner.spawn(ChildProcess.make(command, args, { extendEnv: true, stdin: "ignore" }))
+-        const [stdout, stderr, code] = yield* Effect.all(
+-          [
+-            Stream.mkString(Stream.decodeText(handle.stdout)),
+-            Stream.mkString(Stream.decodeText(handle.stderr)),
+-            handle.exitCode,
+-          ],
+-          { concurrency: "unbounded" },
+-        )
+-        return { stdout, stderr, code }
+-      }, Effect.scoped)
+-
+-      const extract = Effect.fnUntraced(function* (
+-        archive: string,
+-        config: (typeof PLATFORM)[keyof typeof PLATFORM],
+-        target: string,
+-      ) {
+-        const dir = yield* fs.makeTempDirectoryScoped({ directory: Global.Path.bin, prefix: "ripgrep-" })
+-
+-        if (config.extension === "zip") {
+-          const shell = (yield* Effect.sync(() => which("powershell.exe") ?? which("pwsh.exe"))) ?? "powershell.exe"
+-          const result = yield* run(shell, [
+-            "-NoProfile",
+-            "-NonInteractive",
+-            "-Command",
+-            `$global:ProgressPreference = 'SilentlyContinue'; Expand-Archive -LiteralPath '${archive.replaceAll("'", "''")}' -DestinationPath '${dir.replaceAll("'", "''")}' -Force`,
+-          ])
+-          if (result.code !== 0)
+-            throw new Error(
+-              result.stderr.trim() || result.stdout.trim() || `ripgrep extraction failed with code ${result.code}`,
+-            )
+-        }
+-
+-        if (config.extension === "tar.gz") {
+-          const result = yield* run("tar", ["-xzf", archive, "-C", dir])
+-          if (result.code !== 0)
+-            throw new Error(
+-              result.stderr.trim() || result.stdout.trim() || `ripgrep extraction failed with code ${result.code}`,
+-            )
+-        }
+-
+-        const extracted = path.join(
+-          dir,
+-          `ripgrep-${VERSION}-${config.platform}`,
+-          process.platform === "win32" ? "rg.exe" : "rg",
+-        )
+-        if (!(yield* fs.isFile(extracted))) throw new Error(`ripgrep archive did not contain executable: ${extracted}`)
+-
+-        yield* fs.copyFile(extracted, target)
+-        if (process.platform !== "win32") yield* fs.chmod(target, 0o755)
+-      }, Effect.scoped)
+ 
+       return Service.of({
+         filepath: yield* Effect.cached(
+           Effect.gen(function* () {
+-            const system = yield* Effect.sync(() => which(process.platform === "win32" ? "rg.exe" : "rg"))
++            const system = yield* Effect.sync(() => which("rg"))
+             if (system && (yield* fs.isFile(system).pipe(Effect.orDie))) return system
+-
+-            const target = path.join(Global.Path.bin, `rg${process.platform === "win32" ? ".exe" : ""}`)
+-            if (yield* fs.isFile(target).pipe(Effect.orDie)) return target
+-
+-            const platformKey = `${process.arch}-${process.platform}` as keyof typeof PLATFORM
+-            const config = PLATFORM[platformKey]
+-            if (!config) throw new Error(`unsupported platform for ripgrep: ${platformKey}`)
+-
+-            const filename = `ripgrep-${VERSION}-${config.platform}.${config.extension}`
+-            const url = `https://github.com/BurntSushi/ripgrep/releases/download/${VERSION}/${filename}`
+-            const archive = path.join(Global.Path.bin, filename)
+-
+-            yield* Effect.logInfo("downloading ripgrep", { url })
+-            yield* fs.ensureDir(Global.Path.bin).pipe(Effect.orDie)
+-            const bytes = yield* HttpClientRequest.get(url).pipe(
+-              http.execute,
+-              Effect.flatMap((response) => response.arrayBuffer),
+-              Effect.mapError((cause) => (cause instanceof Error ? cause : new Error(String(cause)))),
+-            )
+-            if (bytes.byteLength === 0) throw new Error(`failed to download ripgrep from ${url}`)
+-
+-            yield* fs.writeWithDirs(archive, new Uint8Array(bytes))
+-            yield* extract(archive, config, target)
+-            yield* fs.remove(archive, { force: true }).pipe(Effect.ignore)
+-            return target
++            throw new Error("ripgrep not found on PATH; install it with: pkg install ripgrep")
+           }),
+         ),
+       })
+@@ -127,6 +30,6 @@ export namespace RipgrepBinary {
+   export const node = makeGlobalNode({
+     service: Service,
+     layer: layer,
+-    deps: [FSUtil.node, httpClient, CrossSpawnSpawner.node],
++    deps: [FSUtil.node],
+   })
+ }
+diff --git a/packages/core/src/shell.ts b/packages/core/src/shell.ts
+index 2908910..74b9494 100644
+--- a/packages/core/src/shell.ts
++++ b/packages/core/src/shell.ts
+@@ -1,23 +1,19 @@
+ export * as Shell from "./shell"
+ 
+ import path from "path"
+-import { spawn, type ChildProcess } from "child_process"
++import type { ChildProcess } from "child_process"
+ import { readFile } from "fs/promises"
+ import { statSync } from "fs"
+ import { setTimeout as sleep } from "node:timers/promises"
+-import { Flag } from "./flag/flag"
+-import { FSUtil } from "./fs-util"
+ import { which } from "./util/which"
+ 
+ const SIGKILL_TIMEOUT_MS = 200
+-const META: Record<string, { deny?: boolean; login?: boolean; posix?: boolean; ps?: boolean }> = {
++const META: Record<string, { deny?: boolean; login?: boolean; posix?: boolean }> = {
+   bash: { login: true, posix: true },
+   dash: { login: true, posix: true },
+   fish: { deny: true, login: true },
+   ksh: { login: true, posix: true },
+   nu: { deny: true },
+-  powershell: { ps: true },
+-  pwsh: { ps: true },
+   sh: { login: true, posix: true },
+   zsh: { login: true, posix: true },
+ }
+@@ -32,18 +28,6 @@ export async function killTree(proc: ChildProcess, opts?: { exited?: () => boole
+   const pid = proc.pid
+   if (!pid || opts?.exited?.()) return
+ 
+-  if (process.platform === "win32") {
+-    await new Promise<void>((resolve) => {
+-      const killer = spawn("taskkill", ["/pid", String(pid), "/f", "/t"], {
+-        stdio: "ignore",
+-        windowsHide: true,
+-      })
+-      killer.once("exit", () => resolve())
+-      killer.once("error", () => resolve())
+-    })
+-    return
+-  }
+-
+   try {
+     process.kill(-pid, "SIGTERM")
+     await sleep(SIGKILL_TIMEOUT_MS)
+@@ -63,17 +47,6 @@ function stat(file: string) {
+   return statSync(file, { throwIfNoEntry: false }) ?? undefined
+ }
+ 
+-function full(file: string) {
+-  if (process.platform !== "win32") return file
+-  const shell = FSUtil.windowsPath(file)
+-  if (path.win32.dirname(shell) !== ".") {
+-    if (shell.startsWith("/") && name(shell) === "bash") return gitbash() || shell
+-    return shell
+-  }
+-  if (name(shell) === "bash") return gitbash() || which(shell) || shell
+-  return which(shell) || shell
+-}
+-
+ function meta(file: string) {
+   return META[name(file)]
+ }
+@@ -82,33 +55,18 @@ function ok(file: string) {
+   return meta(file)?.deny !== true
+ }
+ 
+-function rooted(file: string) {
+-  return path.isAbsolute(FSUtil.windowsPath(file))
+-}
+-
+ function resolve(file: string) {
+-  const shell = full(file)
+-  if (rooted(shell)) {
+-    if (stat(shell)?.isFile()) return shell
++  if (path.isAbsolute(file)) {
++    if (stat(file)?.isFile()) return file
+     return
+   }
+-  return which(shell) ?? undefined
+-}
+-
+-function win() {
+-  return Array.from(
+-    new Set(
+-      [which("pwsh"), which("powershell"), gitbash(), process.env.COMSPEC || "cmd.exe"]
+-        .filter((item): item is string => Boolean(item))
+-        .map(full),
+-    ),
+-  )
++  return which(file) ?? undefined
+ }
+ 
+ async function unix() {
+   const text = await readFile("/etc/shells", "utf8").catch(() => "")
+   if (text) return Array.from(new Set(text.split("\n").filter((line) => line.trim() && !line.startsWith("#"))))
+-  return ["/bin/bash", "/bin/zsh", "/bin/sh"]
++  return ["/bin/bash", "/bin/sh"]
+ }
+ 
+ function select(file: string | undefined, opts?: { acceptable?: boolean }) {
+@@ -116,28 +74,16 @@ function select(file: string | undefined, opts?: { acceptable?: boolean }) {
+     const shell = resolve(file)
+     if (shell) return shell
+   }
+-  if (process.platform === "win32") return win()[0]
+   return fallback()
+ }
+ 
+-export function gitbash() {
+-  if (process.platform !== "win32") return
+-  if (Flag.OPENCODE_GIT_BASH_PATH) return Flag.OPENCODE_GIT_BASH_PATH
+-  const git = which("git")
+-  if (!git) return
+-  const file = path.join(git, "..", "..", "bin", "bash.exe")
+-  if (stat(file)?.size) return file
+-}
+-
+ function fallback() {
+-  if (process.platform === "darwin") return "/bin/zsh"
+   const bash = which("bash")
+   if (bash) return bash
+   return "/bin/sh"
+ }
+ 
+ export function name(file: string) {
+-  if (process.platform === "win32") return path.win32.parse(FSUtil.windowsPath(file)).name.toLowerCase()
+   return path.basename(file).toLowerCase()
+ }
+ 
+@@ -149,17 +95,12 @@ export function posix(file: string) {
+   return meta(file)?.posix === true
+ }
+ 
+-export function ps(file: string) {
+-  return meta(file)?.ps === true
+-}
+-
+ function info(file: string): Item {
+-  const item = full(file)
+-  const n = name(item)
++  const n = name(file)
+   return {
+-    path: item,
+-    name: resolve(n) ? n : item,
+-    acceptable: ok(item),
++    path: file,
++    name: resolve(n) ? n : file,
++    acceptable: ok(file),
+   }
+ }
+ 
+@@ -194,8 +135,6 @@ export function args(file: string, command: string, cwd: string) {
+       cwd,
+     ]
+   }
+-  if (n === "cmd") return ["/c", command]
+-  if (ps(file)) return ["-NoProfile", "-Command", command]
+   return ["-c", command]
+ }
+ 
+@@ -221,6 +160,6 @@ acceptable.reset = () => {
+ }
+ 
+ export async function list(): Promise<Item[]> {
+-  const shells = process.platform === "win32" ? win() : await unix()
++  const shells = await unix()
+   return shells.filter((s) => resolve(s)).map(info)
+ }
+diff --git a/packages/core/src/skill/discovery.ts b/packages/core/src/skill/discovery.ts
+index a192ba1..4a7d7b3 100644
+--- a/packages/core/src/skill/discovery.ts
++++ b/packages/core/src/skill/discovery.ts
+@@ -33,7 +33,6 @@ function isSafeRelativePath(value: string) {
+     !value.includes("#") &&
+     !URL.canParse(value) &&
+     !path.posix.isAbsolute(value) &&
+-    !path.win32.isAbsolute(value) &&
+     segments.every((segment) => {
+       try {
+         const decoded = decodeURIComponent(segment)
+diff --git a/packages/core/src/tool/read-filesystem.ts b/packages/core/src/tool/read-filesystem.ts
+index e325a83..3004924 100644
+--- a/packages/core/src/tool/read-filesystem.ts
++++ b/packages/core/src/tool/read-filesystem.ts
+@@ -106,8 +106,6 @@ const extensions = new Set([
+   ".zip",
+   ".tar",
+   ".gz",
+-  ".exe",
+-  ".dll",
+   ".so",
+   ".class",
+   ".jar",
+diff --git a/packages/core/src/util/wildcard.ts b/packages/core/src/util/wildcard.ts
+index 0a67817..270c1cd 100644
+--- a/packages/core/src/util/wildcard.ts
++++ b/packages/core/src/util/wildcard.ts
+@@ -10,5 +10,5 @@ export function match(input: string, pattern: string) {
+ 
+   if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
+ 
+-  return new RegExp("^" + escaped + "$", process.platform === "win32" ? "si" : "s").test(normalized)
++  return new RegExp("^" + escaped + "$", "s").test(normalized)
+ }

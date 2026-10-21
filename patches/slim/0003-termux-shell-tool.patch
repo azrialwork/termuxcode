@@ -1,0 +1,644 @@
+diff --git a/packages/core/src/system-context/builtins.ts b/packages/core/src/system-context/builtins.ts
+index b8b5057..4105c3c 100644
+--- a/packages/core/src/system-context/builtins.ts
++++ b/packages/core/src/system-context/builtins.ts
+@@ -18,7 +18,7 @@ const builtIns = Layer.effectDiscard(
+       `  Working directory: ${location.directory}`,
+       `  Workspace root folder: ${location.project.directory}`,
+       `  Is directory a git repo: ${location.vcs?.type === "git" ? "yes" : "no"}`,
+-      `  Platform: ${process.platform}`,
++      `  Platform: android`,
+       "</env>",
+     ].join("\n")
+     const context = SystemContext.combine([
+diff --git a/packages/core/src/tool/bash.ts b/packages/core/src/tool/bash.ts
+index 2242376..45ea85a 100644
+--- a/packages/core/src/tool/bash.ts
++++ b/packages/core/src/tool/bash.ts
+@@ -46,7 +46,7 @@ const Output = Schema.Struct({
+ 
+ type Output = typeof Output.Type
+ 
+-const defaultShell = () => (process.platform === "win32" ? (process.env.COMSPEC ?? "cmd.exe") : "/bin/sh")
++const defaultShell = () => "/bin/sh"
+ 
+ const modelOutput = (output: Output) => {
+   const warnings = output.warnings?.length
+@@ -66,7 +66,6 @@ const isTimeout = (error: AppProcess.AppProcessError) =>
+ // TODO: Port tree-sitter bash / PowerShell parser-based approval reduction.
+ // TODO: Port BashArity reusable command-prefix approvals.
+ // TODO: Replace token-based command-argument external-directory advisories with parser-based detection.
+-// TODO: Restore PowerShell and cmd-specific invocation/path handling on Windows.
+ // TODO: Add plugin shell.env environment augmentation once V2 plugin hooks exist.
+ // TODO: Add durable/live progress metadata streaming for long-running commands once V2 tool invocation progress context is wired.
+ // TODO: Persist background job status and define restart recovery before exposing remote observation.
+@@ -106,7 +105,7 @@ const layer = Layer.effectDiscard(
+     yield* tools
+       .register({
+         [name]: Tool.make({
+-          description: `Execute one shell command string with the host user's filesystem, process, and network authority. The active Location is the default working directory. Relative workdir values resolve from that Location. External workdir values require external_directory approval; best-effort command-argument path warnings are advisory only. Timeout values are milliseconds (default: ${DEFAULT_TIMEOUT_MS}; maximum: ${MAX_TIMEOUT_MS}). Uses the configured shell when set; otherwise uses /bin/sh on POSIX and COMSPEC or cmd.exe on Windows.`,
++          description: `Execute one shell command string with the host user's filesystem, process, and network authority. The active Location is the default working directory. Relative workdir values resolve from that Location. External workdir values require external_directory approval; best-effort command-argument path warnings are advisory only. Timeout values are milliseconds (default: ${DEFAULT_TIMEOUT_MS}; maximum: ${MAX_TIMEOUT_MS}). Uses the configured shell when set; otherwise uses /bin/sh.`,
+           input: Input,
+           output: Output,
+           structured: StructuredOutput,
+@@ -159,7 +158,7 @@ const layer = Layer.effectDiscard(
+                 cwd: target.canonical,
+                 shell,
+                 stdin: "ignore",
+-                detached: process.platform !== "win32",
++                detached: true,
+                 forceKillAfter: Duration.seconds(3),
+               })
+               const timeout = input.timeout ?? DEFAULT_TIMEOUT_MS
+diff --git a/packages/opencode/src/permission/arity.ts b/packages/opencode/src/permission/arity.ts
+index cd4b0a7..78289ff 100644
+--- a/packages/opencode/src/permission/arity.ts
++++ b/packages/opencode/src/permission/arity.ts
+@@ -50,7 +50,6 @@ const ARITY: Record<string, number> = {
+   aws: 3, // aws s3 ls
+   az: 3, // az storage blob list
+   bazel: 2, // bazel build
+-  brew: 2, // brew install node
+   bun: 2, // bun install
+   "bun run": 3, // bun run dev
+   "bun x": 3, // bun x vite
+diff --git a/packages/opencode/src/session/system.ts b/packages/opencode/src/session/system.ts
+index 61ab74d..665ae9d 100644
+--- a/packages/opencode/src/session/system.ts
++++ b/packages/opencode/src/session/system.ts
+@@ -79,7 +79,7 @@ const layer = Layer.effect(
+             `  Working directory: ${ctx.directory}`,
+             `  Workspace root folder: ${ctx.worktree}`,
+             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
+-            `  Platform: ${process.platform}`,
++            `  Platform: android`,
+             `  Today's date: ${new Date().toDateString()}`,
+             `</env>`,
+           ].join("\n"),
+diff --git a/packages/opencode/src/tool/shell.ts b/packages/opencode/src/tool/shell.ts
+index 1e4423e..383f317 100644
+--- a/packages/opencode/src/tool/shell.ts
++++ b/packages/opencode/src/tool/shell.ts
+@@ -25,7 +25,7 @@ import { BashArity } from "@/permission/arity"
+ export { Parameters } from "./shell/prompt"
+ 
+ const MAX_METADATA_LENGTH = 30_000
+-const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
++const CWD = new Set(["cd", "chdir", "popd", "pushd"])
+ const FILES = new Set([
+   ...CWD,
+   "rm",
+@@ -36,35 +36,7 @@ const FILES = new Set([
+   "chmod",
+   "chown",
+   "cat",
+-  // Leave PowerShell aliases out for now. Common ones like cat/cp/mv/rm/mkdir
+-  // already hit the entries above, and alias normalization should happen in one
+-  // place later so we do not risk double-prompting.
+-  "get-content",
+-  "set-content",
+-  "add-content",
+-  "copy-item",
+-  "move-item",
+-  "remove-item",
+-  "new-item",
+-  "rename-item",
+ ])
+-const CMD_FILES = new Set([
+-  "copy",
+-  "del",
+-  "dir",
+-  "erase",
+-  "md",
+-  "mkdir",
+-  "move",
+-  "rd",
+-  "ren",
+-  "rename",
+-  "rmdir",
+-  "type",
+-])
+-const FLAGS = new Set(["-destination", "-literalpath", "-path"])
+-const SWITCHES = new Set(["-confirm", "-debug", "-force", "-nonewline", "-recurse", "-verbose", "-whatif"])
+-
+ type Part = {
+   type: string
+   text: string
+@@ -93,14 +65,6 @@ function parts(node: Node) {
+   for (let i = 0; i < node.childCount; i++) {
+     const child = node.child(i)
+     if (!child) continue
+-    if (child.type === "command_elements") {
+-      for (let j = 0; j < child.childCount; j++) {
+-        const item = child.child(j)
+-        if (!item || item.type === "command_argument_sep" || item.type === "redirection") continue
+-        out.push({ type: item.type, text: item.text })
+-      }
+-      continue
+-    }
+     if (
+       child.type !== "command_name" &&
+       child.type !== "command_name_expr" &&
+@@ -138,43 +102,9 @@ function home(text: string) {
+   return text
+ }
+ 
+-function envValue(key: string) {
+-  if (process.platform !== "win32") return process.env[key]
+-  const name = Object.keys(process.env).find((item) => item.toLowerCase() === key.toLowerCase())
+-  return name ? process.env[name] : undefined
+-}
+-
+-function auto(key: string, cwd: string, shell: string) {
+-  const name = key.toUpperCase()
+-  if (name === "HOME") return os.homedir()
+-  if (name === "PWD") return cwd
+-  if (name === "PSHOME") return path.dirname(shell)
+-}
+-
+-function expand(text: string, cwd: string, shell: string) {
+-  const out = unquote(text)
+-    .replace(/\$\{env:([^}]+)\}/gi, (_, key: string) => envValue(key) || "")
+-    .replace(/\$env:([A-Za-z_][A-Za-z0-9_]*)/gi, (_, key: string) => envValue(key) || "")
+-    .replace(/\$(HOME|PWD|PSHOME)(?=$|[\\/])/gi, (_, key: string) => auto(key, cwd, shell) || "")
+-  return home(out)
+-}
+-
+-function provider(text: string) {
+-  const match = text.match(/^([A-Za-z]+)::(.*)$/)
+-  if (match) {
+-    if (match[1].toLowerCase() !== "filesystem") return
+-    return match[2]
+-  }
+-  const prefix = text.match(/^([A-Za-z]+):(.*)$/)
+-  if (!prefix) return text
+-  if (prefix[1].length === 1) return text
+-  return
+-}
+-
+-function dynamic(text: string, ps: boolean) {
++function dynamic(text: string) {
+   if (text.startsWith("(") || text.startsWith("@(")) return true
+   if (text.includes("$(") || text.includes("${") || text.includes("`")) return true
+-  if (ps) return /\$(?!env:)/i.test(text)
+   return text.includes("$")
+ }
+ 
+@@ -185,36 +115,11 @@ function prefix(text: string) {
+   return text.slice(0, match.index)
+ }
+ 
+-function pathArgs(list: Part[], ps: boolean, cmd = false) {
+-  if (!ps) {
+-    return list
+-      .slice(1)
+-      .filter(
+-        (item) =>
+-          !item.text.startsWith("-") &&
+-          !(cmd && item.text.startsWith("/")) &&
+-          !(list[0]?.text === "chmod" && item.text.startsWith("+")),
+-      )
+-      .map((item) => item.text)
+-  }
+-
+-  const out: string[] = []
+-  let want = false
+-  for (const item of list.slice(1)) {
+-    if (want) {
+-      out.push(item.text)
+-      want = false
+-      continue
+-    }
+-    if (item.type === "command_parameter") {
+-      const flag = item.text.toLowerCase()
+-      if (SWITCHES.has(flag)) continue
+-      want = FLAGS.has(flag)
+-      continue
+-    }
+-    out.push(item.text)
+-  }
+-  return out
++function pathArgs(list: Part[]) {
++  return list
++    .slice(1)
++    .filter((item) => !item.text.startsWith("-") && !(list[0]?.text === "chmod" && item.text.startsWith("+")))
++    .map((item) => item.text)
+ }
+ 
+ function preview(text: string) {
+@@ -254,8 +159,8 @@ function tail(text: string, maxLines: number, maxBytes: number) {
+   }
+ }
+ 
+-const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
+-  const tree = yield* Effect.promise(() => parser().then((p) => (ps ? p.ps : p.bash).parse(command)))
++const parse = Effect.fn("ShellTool.parse")(function* (command: string) {
++  const tree = yield* Effect.promise(() => parser().then((p) => p.bash.parse(command)))
+   if (!tree) throw new Error("Failed to parse command")
+   return tree
+ })
+@@ -263,10 +168,7 @@ const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boole
+ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, input: { command: string }) {
+   if (scan.dirs.size > 0) {
+     const directories = Array.from(scan.dirs)
+-    const globs = directories.map((dir) => {
+-      if (process.platform === "win32") return FSUtil.normalizePathPattern(path.join(dir, "*"))
+-      return path.join(dir, "*")
+-    })
++    const globs = directories.map((dir) => path.join(dir, "*"))
+     yield* ctx.ask({
+       permission: "external_directory",
+       patterns: globs,
+@@ -291,21 +193,12 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
+ })
+ 
+ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
+-  if (process.platform === "win32" && Shell.ps(shell)) {
+-    return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+-      cwd,
+-      env,
+-      stdin: "ignore",
+-      detached: false,
+-    })
+-  }
+-
+   return ChildProcess.make(command, [], {
+     shell,
+     cwd,
+     env,
+     stdin: "ignore",
+-    detached: process.platform !== "win32",
++    detached: true,
+   })
+ }
+ const parser = lazy(async () => {
+@@ -322,17 +215,11 @@ const parser = lazy(async () => {
+   const { default: bashWasm } = await import("tree-sitter-bash/tree-sitter-bash.wasm" as string, {
+     with: { type: "wasm" },
+   })
+-  const { default: psWasm } = await import("tree-sitter-powershell/tree-sitter-powershell.wasm" as string, {
+-    with: { type: "wasm" },
+-  })
+   const bashPath = resolveWasm(bashWasm)
+-  const psPath = resolveWasm(psWasm)
+-  const [bashLanguage, psLanguage] = await Promise.all([Language.load(bashPath), Language.load(psPath)])
++  const bashLanguage = await Language.load(bashPath)
+   const bash = new Parser()
+   bash.setLanguage(bashLanguage)
+-  const ps = new Parser()
+-  ps.setLanguage(psLanguage)
+-  return { bash, ps }
++  return { bash }
+ })
+ 
+ export const ShellTool = Tool.define(
+@@ -346,40 +233,20 @@ export const ShellTool = Tool.define(
+     const flags = yield* RuntimeFlags.Service
+     const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
+ 
+-    const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
+-      const lines = yield* spawner
+-        .lines(ChildProcess.make(shell, ["-lc", 'cygpath -w -- "$1"', "_", text]))
+-        .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+-      const file = lines[0]?.trim()
+-      if (!file) return
+-      return FSUtil.normalizePath(file)
+-    })
+-
+-    const resolvePath = Effect.fn("ShellTool.resolvePath")(function* (text: string, root: string, shell: string) {
+-      if (process.platform === "win32") {
+-        if (Shell.posix(shell) && text.startsWith("/") && FSUtil.windowsPath(text) === text) {
+-          const file = yield* cygpath(shell, text)
+-          if (file) return file
+-        }
+-        return FSUtil.normalizePath(path.resolve(root, FSUtil.windowsPath(text)))
+-      }
++    const resolvePath = Effect.fn("ShellTool.resolvePath")(function* (text: string, root: string) {
+       return path.resolve(root, text)
+     })
+ 
+-    const argPath = Effect.fn("ShellTool.argPath")(function* (arg: string, cwd: string, ps: boolean, shell: string) {
+-      const text = ps ? expand(arg, cwd, shell) : home(unquote(arg))
++    const argPath = Effect.fn("ShellTool.argPath")(function* (arg: string, cwd: string) {
++      const text = home(unquote(arg))
+       const file = text && prefix(text)
+-      if (!file || dynamic(file, ps)) return
+-      const next = ps ? provider(file) : file
+-      if (!next) return
+-      return yield* resolvePath(next, cwd, shell)
++      if (!file || dynamic(file)) return
++      return yield* resolvePath(file, cwd)
+     })
+ 
+     const collect = Effect.fn("ShellTool.collect")(function* (
+       root: Node,
+       cwd: string,
+-      ps: boolean,
+-      shell: string,
+       instance: InstanceContext,
+     ) {
+       const scan: Scan = {
+@@ -387,16 +254,14 @@ export const ShellTool = Tool.define(
+         patterns: new Set<string>(),
+         always: new Set<string>(),
+       }
+-      const shellKind = ShellID.toKind(Shell.name(shell))
+-
+       for (const node of commands(root)) {
+         const command = parts(node)
+         const tokens = command.map((item) => item.text)
+-        const cmd = ps || shellKind === "cmd" ? tokens[0]?.toLowerCase() : tokens[0]
++        const cmd = tokens[0]
+ 
+-        if (cmd && (FILES.has(cmd) || (shellKind === "cmd" && CMD_FILES.has(cmd)))) {
+-          for (const arg of pathArgs(command, ps, shellKind === "cmd")) {
+-            const resolved = yield* argPath(arg, cwd, ps, shell)
++        if (cmd && FILES.has(cmd)) {
++          for (const arg of pathArgs(command)) {
++            const resolved = yield* argPath(arg, cwd)
+             yield* Effect.logInfo("resolved path", { arg, resolved })
+             if (!resolved || containsPath(resolved, instance)) continue
+             const dir = (yield* fs.isDir(resolved)) ? resolved : path.dirname(resolved)
+@@ -600,7 +465,7 @@ export const ShellTool = Tool.define(
+         const shell = Shell.acceptable(cfg.shell)
+         const name = Shell.name(shell)
+         const limits = yield* trunc.limits()
+-        const prompt = ShellPrompt.render(name, process.platform, limits, defaultTimeoutMs)
++        const prompt = ShellPrompt.render(name, limits, defaultTimeoutMs)
+         yield* Effect.logInfo("shell tool using shell", { shell })
+ 
+         return {
+@@ -610,19 +475,18 @@ export const ShellTool = Tool.define(
+             Effect.gen(function* () {
+               const instanceCtx = yield* InstanceState.context
+               const cwd = params.workdir
+-                ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
++                ? yield* resolvePath(params.workdir, instanceCtx.directory)
+                 : instanceCtx.directory
+               if (params.timeout !== undefined && params.timeout < 0) {
+                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
+               }
+               const timeout = params.timeout ?? defaultTimeoutMs
+-              const ps = Shell.ps(shell)
+               yield* Effect.scoped(
+                 Effect.gen(function* () {
+-                  const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
++                  const tree = yield* Effect.acquireRelease(parse(params.command), (tree) =>
+                     Effect.sync(() => tree.delete()),
+                   )
+-                  const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
++                  const scan = yield* collect(tree.rootNode, cwd, instanceCtx)
+                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
+                   yield* ask(ctx, scan, params)
+                 }),
+diff --git a/packages/opencode/src/tool/shell/id.ts b/packages/opencode/src/tool/shell/id.ts
+index 061253f..dc59dc7 100644
+--- a/packages/opencode/src/tool/shell/id.ts
++++ b/packages/opencode/src/tool/shell/id.ts
+@@ -1,16 +1,3 @@
+-const kinds = ["bash", "pwsh", "powershell", "cmd"] as const
+-export type Kind = (typeof kinds)[number]
+-
+-const shellKinds = new Set<string>(kinds)
+-
+-function isKind(value: string): value is Kind {
+-  return shellKinds.has(value)
+-}
+-
+-export function toKind(value: string): Kind {
+-  return isKind(value) ? value : "bash"
+-}
+-
+ // Keep the exposed tool ID and permission key as "bash" for compatibility with
+ // existing plugins, users, and saved permissions. Rename with opencode 2.0.
+ export const ToolID = "bash"
+diff --git a/packages/opencode/src/tool/shell/prompt.ts b/packages/opencode/src/tool/shell/prompt.ts
+index b576b77..ea2ef98 100644
+--- a/packages/opencode/src/tool/shell/prompt.ts
++++ b/packages/opencode/src/tool/shell/prompt.ts
+@@ -4,9 +4,6 @@ import { PositiveInt } from "@opencode-ai/core/schema"
+ import { Global } from "@opencode-ai/core/global"
+ import { ShellID } from "./id"
+ 
+-const PS = new Set(["powershell", "pwsh"])
+-const CMD = new Set(["cmd"])
+-
+ export type Limits = {
+   maxLines: number
+   maxBytes: number
+@@ -33,47 +30,7 @@ function renderPrompt(template: string, values: Record<string, string>) {
+   })
+ }
+ 
+-function shellDisplayName(name: string) {
+-  if (name === "pwsh") return "PowerShell (7+)"
+-  if (name === "powershell") return "Windows PowerShell (5.1)"
+-  if (name === "cmd") return "cmd.exe"
+-  return name
+-}
+-
+-function powershellNotes(name: string) {
+-  if (name === "pwsh") {
+-    return `# PowerShell (7+) shell notes
+-- This cross-platform shell supports pipeline chain operators (\`&&\` and \`||\`).
+-- Use double quotes for interpolated strings (\`"Hello $name"\`), single quotes for verbatim strings.
+-- Prefer full cmdlet names like \`Get-ChildItem\`, \`Set-Content\`, \`Remove-Item\`, and \`New-Item\` over aliases.
+-- Use \`$(...)\` for subexpressions. Use \`@(...)\` for array expressions.
+-- To call a native executable whose path contains spaces, use the call operator: \`& "path/to/exe" args\`.
+-- Escape special characters with the PowerShell backtick character.`
+-  }
+-  if (name === "powershell") {
+-    return `# Windows PowerShell (5.1) shell notes
+-- Use \`cmd1; if ($?) { cmd2 }\` to chain dependent commands.
+-- Use double quotes for interpolated strings (\`"Hello $name"\`), single quotes for verbatim strings.
+-- Prefer full cmdlet names like \`Get-ChildItem\`, \`Set-Content\`, \`Remove-Item\`, and \`New-Item\` over aliases.
+-- Use \`$(...)\` for subexpressions. Use \`@(...)\` for array expressions.
+-- To call a native executable whose path contains spaces, use the call operator: \`& "path/to/exe" args\`.
+-- Escape special characters with the PowerShell backtick character.`
+-  }
+-  return ""
+-}
+-
+-function chainGuidance(name: string) {
+-  if (name === "powershell") {
+-    return "If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell (5.1) does not support it. Use PowerShell conditionals such as `cmd1; if ($?) { cmd2 }` when later commands must depend on earlier success."
+-  }
+-  if (PS.has(name)) {
+-    return "If the commands depend on each other and must run sequentially, use a single bash tool call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like New-Item before Copy-Item, Write before bash for git operations, or git add before git commit), run these operations sequentially instead."
+-  }
+-  if (CMD.has(name)) {
+-    return "If the commands depend on each other and must run sequentially, use a single bash tool call with `&&` to chain them together (e.g., `mkdir out && dir out`). For instance, if one operation must complete before another starts, run these operations sequentially instead."
+-  }
+-  return "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
+-}
++const CHAIN = "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
+ 
+ function bashCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number) {
+   return `Before executing the command, please follow these steps:
+@@ -118,148 +75,13 @@ Usage notes:
+     </bad-example>`
+ }
+ 
+-function powershellCommandSection(
+-  name: string,
+-  chain: string,
+-  pathSep: string,
+-  limits: Limits,
+-  defaultTimeoutMs: number,
+-) {
+-  return `${powershellNotes(name)}
+-
+-Before executing the command, please follow these steps:
+-
+-1. Directory Verification:
+-   - If the command will create new directories or files, first use \`Test-Path -LiteralPath <parent>\` to verify the parent directory exists and is the correct location
+-   - For example, before creating \`foo${pathSep}bar\`, first use \`Test-Path -LiteralPath "foo"\` to check that \`foo\` exists and is the intended parent directory
+-
+-2. Command Execution:
+-   - Always quote file paths that contain spaces with double quotes (e.g., Remove-Item -LiteralPath "path with spaces${pathSep}file.txt")
+-   - Examples of proper quoting:
+-     - New-Item -ItemType Directory -Path "My Documents" (correct)
+-     - New-Item -ItemType Directory -Path My Documents (incorrect - path is split)
+-     - & "path with spaces${pathSep}script.ps1" (correct)
+-     - path with spaces${pathSep}script.ps1 (incorrect - path is split and not invoked)
+-   - After ensuring proper quoting, execute the command.
+-   - Capture the output of the command.
+-
+-Usage notes:
+-  - The command argument is required.
+-  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
+-  - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
+-
+-  - Avoid using Shell with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
+-    - File search: Use Glob (NOT Get-ChildItem)
+-    - Content search: Use Grep (NOT Select-String)
+-    - Read files: Use Read (NOT Get-Content)
+-    - Edit files: Use Edit (NOT Set-Content)
+-    - Write files: Use Write (NOT Set-Content/Out-File or here-strings)
+-    - Communication: Output text directly (NOT Write-Output/Write-Host)
+-  - When issuing multiple commands:
+-    - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "git status" and "git diff", send a single message with two bash tool calls in parallel.
+-    - ${chain}
+-    - Use \`;\` only when you need to run commands sequentially but don't care if earlier commands fail
+-    - DO NOT use newlines to separate commands (newlines are ok in quoted strings)
+-  - AVOID changing directories inside the command. Use the \`workdir\` parameter to change directories instead.
+-    <good-example>
+-    Use workdir="project${pathSep}subdir" with command: pytest tests
+-    </good-example>
+-    <bad-example>
+-    ${name === "powershell" ? `Set-Location -LiteralPath "project${pathSep}subdir"; if ($?) { pytest tests }` : `Set-Location -LiteralPath "project${pathSep}subdir" && pytest tests`}
+-    </bad-example>`
+-}
+-
+-function cmdCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number) {
+-  return `# cmd.exe shell notes
+-- Use double quotes for paths with spaces.
+-- Use %VAR% for environment variables.
+-- Use \`if exist\` for existence checks.
+-- Use \`call\` when invoking batch files from another batch-style command.
+-
+-Before executing the command, please follow these steps:
+-
+-1. Directory Verification:
+-   - If the command will create new directories or files, first use \`if exist\` to verify the parent directory exists and is the correct location
+-   - For example, before creating \`foo\\bar\`, first use \`if exist "foo\\" dir "foo"\` to check that \`foo\` exists and is the intended parent directory
+-
+-2. Command Execution:
+-   - Always quote file paths that contain spaces with double quotes (e.g., del "path with spaces\\file.txt")
+-   - Examples of proper quoting:
+-     - mkdir "My Documents" (correct)
+-     - mkdir My Documents (incorrect - path is split)
+-     - call "path with spaces\\script.bat" (correct)
+-     - path with spaces\\script.bat (incorrect - path is split and not invoked correctly)
+-   - After ensuring proper quoting, execute the command.
+-   - Capture the output of the command.
+-
+-Usage notes:
+-  - The command argument is required.
+-  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
+-  - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`more\` or other pagination commands to limit output; the full output will already be captured to a file for more precise searching.
+-
+-  - Avoid using Shell with cmd.exe file/content commands unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
+-    - File search: Use Glob (NOT dir /s)
+-    - Content search: Use Grep (NOT findstr)
+-    - Read files: Use Read (NOT type)
+-    - Edit files: Use Edit (NOT copy)
+-    - Write files: Use Write (NOT echo > file)
+-    - Communication: Output text directly (NOT echo)
+-  - When issuing multiple commands:
+-    - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "dir" and "where cmd", send a single message with two bash tool calls in parallel.
+-    - ${chain}
+-    - Use \`&\` only when you need to run commands sequentially but don't care if earlier commands fail
+-    - DO NOT use newlines to separate commands (newlines are ok in quoted strings)
+-  - AVOID changing directories inside the command. Use the \`workdir\` parameter to change directories instead.
+-    <good-example>
+-    Use workdir="project\\subdir" with command: dir
+-    </good-example>
+-    <bad-example>
+-    cd /d "project\\subdir" && dir
+-    </bad-example>`
+-}
+-
+-function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number) {
+-  const isPowerShell = PS.has(name)
+-  const chain = chainGuidance(name)
+-  if (CMD.has(name)) {
+-    return {
+-      intro: `Executes a given ${shellDisplayName(name)} command with optional timeout, ensuring proper handling and security measures.`,
+-      workdirSection:
+-        "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID changing directories inside the command - use `workdir` instead.",
+-      commandSection: cmdCommandSection(chain, limits, defaultTimeoutMs),
+-      gitCommands: "git commands",
+-      gitCommandRestriction: "git commands",
+-      createPrInstruction: "Create PR using a temporary body file so cmd.exe quoting stays simple.",
+-      createPrExample: `(\n  echo ## Summary\n  echo - ^<1-3 bullet points^>\n) > pr-body.txt\ngh pr create --title "the pr title" --body-file pr-body.txt`,
+-    }
+-  }
+-  if (isPowerShell) {
+-    return {
+-      intro: `Executes a given ${shellDisplayName(name)} command with optional timeout, ensuring proper handling and security measures.`,
+-      workdirSection:
+-        "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID changing directories inside the command - use `workdir` instead.",
+-      commandSection: powershellCommandSection(
+-        name,
+-        chain,
+-        platform === "win32" ? "\\" : "/",
+-        limits,
+-        defaultTimeoutMs,
+-      ),
+-      gitCommands: "git commands",
+-      gitCommandRestriction: "git commands",
+-      createPrInstruction: "Create PR using gh pr create with a PowerShell here-string to pass the body correctly.",
+-      createPrExample: `gh pr create --title "the pr title" --body @'
+-## Summary
+-- <1-3 bullet points>
+-'@`,
+-    }
+-  }
++function profile(name: string, limits: Limits, defaultTimeoutMs: number) {
+   return {
+     intro:
+       "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.",
+     workdirSection:
+       "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID using `cd <directory> && <command>` patterns - use `workdir` instead.",
+-    commandSection: bashCommandSection(chain, limits, defaultTimeoutMs),
++    commandSection: bashCommandSection(CHAIN, limits, defaultTimeoutMs),
+     gitCommands: "bash commands",
+     gitCommandRestriction: "git bash commands",
+     createPrInstruction:
+@@ -270,12 +92,12 @@ function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaul
+   }
+ }
+ 
+-export function render(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number) {
+-  const selected = profile(name, platform, limits, defaultTimeoutMs)
++export function render(name: string, limits: Limits, defaultTimeoutMs: number) {
++  const selected = profile(name, limits, defaultTimeoutMs)
+   return {
+     description: renderPrompt(DESCRIPTION, {
+       intro: selected.intro,
+-      os: platform,
++      os: "android",
+       shell: name,
+       tmp: Global.Path.tmp,
+       workdirSection: selected.workdirSection,

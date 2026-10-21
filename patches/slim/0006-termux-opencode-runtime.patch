@@ -1,0 +1,467 @@
+diff --git a/packages/opencode/src/cli/cmd/github.handler.ts b/packages/opencode/src/cli/cmd/github.handler.ts
+index e990a3c..b1a5ad1 100644
+--- a/packages/opencode/src/cli/cmd/github.handler.ts
++++ b/packages/opencode/src/cli/cmd/github.handler.ts
+@@ -286,12 +286,7 @@ export const githubInstall = Effect.fn("Cli.github.install")(function* () {
+ 
+         // Open browser
+         const url = "https://github.com/apps/opencode-agent"
+-        const command =
+-          process.platform === "darwin"
+-            ? `open "${url}"`
+-            : process.platform === "win32"
+-              ? `start "" "${url}"`
+-              : `xdg-open "${url}"`
++        const command = `xdg-open "${url}"`
+ 
+         exec(command, (error) => {
+           if (error) {
+diff --git a/packages/opencode/src/cli/cmd/run/runtime.boot.ts b/packages/opencode/src/cli/cmd/run/runtime.boot.ts
+index b1f6217..fac90fe 100644
+--- a/packages/opencode/src/cli/cmd/run/runtime.boot.ts
++++ b/packages/opencode/src/cli/cmd/run/runtime.boot.ts
+@@ -68,7 +68,7 @@ function emptySessionInfo(): SessionInfo {
+ 
+ function defaultRunTuiConfig(): RunTuiConfig {
+   return {
+-    ...resolve({}, { terminalSuspend: process.platform !== "win32" }),
++    ...resolve({}, { terminalSuspend: true }),
+     diff_style: "auto",
+   }
+ }
+diff --git a/packages/opencode/src/cli/cmd/run/runtime.lifecycle.ts b/packages/opencode/src/cli/cmd/run/runtime.lifecycle.ts
+index 4644d3d..03c033d 100644
+--- a/packages/opencode/src/cli/cmd/run/runtime.lifecycle.ts
++++ b/packages/opencode/src/cli/cmd/run/runtime.lifecycle.ts
+@@ -186,7 +186,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
+       autoFocus: false,
+       openConsoleOnError: false,
+       exitOnCtrlC: false,
+-      useKittyKeyboard: { events: process.platform === "win32" },
++      useKittyKeyboard: { events: false },
+       screenMode: "split-footer",
+       footerHeight: FOOTER_HEIGHT,
+       externalOutputMode: "capture-stdout",
+diff --git a/packages/opencode/src/cli/cmd/run/runtime.stdin.ts b/packages/opencode/src/cli/cmd/run/runtime.stdin.ts
+index d236fb0..a45c574 100644
+--- a/packages/opencode/src/cli/cmd/run/runtime.stdin.ts
++++ b/packages/opencode/src/cli/cmd/run/runtime.stdin.ts
+@@ -15,16 +15,13 @@ function openTerminalStdin(path: string): NodeJS.ReadStream {
+ export function resolveInteractiveStdin(
+   stdin: NodeJS.ReadStream = process.stdin,
+   open: (path: string) => NodeJS.ReadStream = openTerminalStdin,
+-  platform = process.platform,
+ ): InteractiveStdin {
+   if (stdin.isTTY) {
+     return { stdin }
+   }
+ 
+-  const file = platform === "win32" ? "CONIN$" : "/dev/tty"
+-
+   try {
+-    const stream = open(file)
++    const stream = open("/dev/tty")
+     return {
+       stdin: stream,
+       cleanup: () => {
+diff --git a/packages/opencode/src/cli/cmd/session.ts b/packages/opencode/src/cli/cmd/session.ts
+index 9e6ddda..80b5d99 100644
+--- a/packages/opencode/src/cli/cmd/session.ts
++++ b/packages/opencode/src/cli/cmd/session.ts
+@@ -6,39 +6,12 @@ import { Session } from "@/session/session"
+ import { SessionID } from "../../session/schema"
+ import { UI } from "../ui"
+ import { Locale } from "@/util/locale"
+-import { Flag } from "@opencode-ai/core/flag/flag"
+-import { Filesystem } from "@/util/filesystem"
+ import { Process } from "@/util/process"
+ import { NotFoundError } from "@/storage/storage"
+ import { EOL } from "os"
+-import path from "path"
+-import { which } from "@opencode-ai/core/util/which"
+ 
+ function pagerCmd(): string[] {
+-  const lessOptions = ["-R", "-S"]
+-  if (process.platform !== "win32") {
+-    return ["less", ...lessOptions]
+-  }
+-
+-  // user could have less installed via other options
+-  const lessOnPath = which("less")
+-  if (lessOnPath) {
+-    if (Filesystem.stat(lessOnPath)?.size) return [lessOnPath, ...lessOptions]
+-  }
+-
+-  if (Flag.OPENCODE_GIT_BASH_PATH) {
+-    const less = path.join(Flag.OPENCODE_GIT_BASH_PATH, "..", "..", "usr", "bin", "less.exe")
+-    if (Filesystem.stat(less)?.size) return [less, ...lessOptions]
+-  }
+-
+-  const git = which("git")
+-  if (git) {
+-    const less = path.join(git, "..", "..", "usr", "bin", "less.exe")
+-    if (Filesystem.stat(less)?.size) return [less, ...lessOptions]
+-  }
+-
+-  // Fall back to Windows built-in more (via cmd.exe)
+-  return ["cmd", "/c", "more"]
++  return ["less", "-R", "-S"]
+ }
+ 
+ export const SessionCommand = cmd({
+diff --git a/packages/opencode/src/config/tui.ts b/packages/opencode/src/config/tui.ts
+index 8f50375..f9267ed 100644
+--- a/packages/opencode/src/config/tui.ts
++++ b/packages/opencode/src/config/tui.ts
+@@ -214,7 +214,7 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory:
+       ...acc.result,
+     },
+     {
+-      terminalSuspend: process.platform !== "win32",
++      terminalSuspend: true,
+     },
+   )
+ 
+diff --git a/packages/opencode/src/mcp/browser.ts b/packages/opencode/src/mcp/browser.ts
+index 68f4f59..a7eb900 100644
+--- a/packages/opencode/src/mcp/browser.ts
++++ b/packages/opencode/src/mcp/browser.ts
+@@ -28,7 +28,6 @@ const layer = Layer.succeed(
+           resume(Effect.fail(new Error(`Browser open failed with exit code ${code}`)))
+         }
+         subprocess.on("exit", onExit)
+-        // On Windows and WSL, open() can return only after the launcher has exited.
+         onExit(subprocess.exitCode)
+       })
+     }),
+diff --git a/packages/opencode/src/mcp/index.ts b/packages/opencode/src/mcp/index.ts
+index 05f12fa..2c36eee 100644
+--- a/packages/opencode/src/mcp/index.ts
++++ b/packages/opencode/src/mcp/index.ts
+@@ -417,7 +417,6 @@ const layer = Layer.effect(
+ 
+     const descendants = Effect.fnUntraced(
+       function* (pid: number) {
+-        if (process.platform === "win32") return [] as number[]
+         const pids: number[] = []
+         const queue = [pid]
+         for (let index = 0; index < queue.length; index++) {
+diff --git a/packages/opencode/src/provider/provider.ts b/packages/opencode/src/provider/provider.ts
+index 42fde1e..459706a 100644
+--- a/packages/opencode/src/provider/provider.ts
++++ b/packages/opencode/src/provider/provider.ts
+@@ -1874,7 +1874,7 @@ const layer = Layer.effect(
+         })()
+ 
+         // `installedPath` is a local entry path or an existing `file://` URL. Normalize
+-        // only path inputs so Node on Windows accepts the dynamic import.
++        // only path inputs so the dynamic import always resolves.
+         const importSpec = installedPath.startsWith("file://") ? installedPath : pathToFileURL(installedPath).href
+         const mod = await import(importSpec)
+ 
+diff --git a/packages/opencode/src/tool/apply_patch.ts b/packages/opencode/src/tool/apply_patch.ts
+index 3f89a63..fa1118c 100644
+--- a/packages/opencode/src/tool/apply_patch.ts
++++ b/packages/opencode/src/tool/apply_patch.ts
+@@ -286,7 +286,7 @@ export const ApplyPatchTool = Tool.define(
+       for (const change of fileChanges) {
+         if (change.type === "delete") continue
+         const target = change.movePath ?? change.filePath
+-        const block = LSP.Diagnostic.report(target, diagnostics[FSUtil.normalizePath(target)] ?? [])
++        const block = LSP.Diagnostic.report(target, diagnostics[target] ?? [])
+         if (!block) continue
+         const rel = path.relative(instance.worktree, target).replaceAll("\\", "/")
+         output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
+diff --git a/packages/opencode/src/tool/edit.ts b/packages/opencode/src/tool/edit.ts
+index a92e472..73a70db 100644
+--- a/packages/opencode/src/tool/edit.ts
++++ b/packages/opencode/src/tool/edit.ts
+@@ -196,8 +196,7 @@ export const EditTool = Tool.define(
+           let output = "Edit applied successfully."
+           yield* lsp.touchFile(filePath, "document")
+           const diagnostics = yield* lsp.diagnostics()
+-          const normalizedFilePath = FSUtil.normalizePath(filePath)
+-          const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
++          const block = LSP.Diagnostic.report(filePath, diagnostics[filePath] ?? [])
+           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
+ 
+           return {
+diff --git a/packages/opencode/src/tool/external-directory.ts b/packages/opencode/src/tool/external-directory.ts
+index 4372db8..db31860 100644
+--- a/packages/opencode/src/tool/external-directory.ts
++++ b/packages/opencode/src/tool/external-directory.ts
+@@ -3,7 +3,6 @@ import { Effect } from "effect"
+ import { InstanceState } from "@/effect/instance-state"
+ import type * as Tool from "./tool"
+ import { containsPath } from "../project/instance-context"
+-import { FSUtil } from "@opencode-ai/core/fs-util"
+ 
+ type Kind = "file" | "directory"
+ 
+@@ -22,15 +21,12 @@ export const assertExternalDirectoryEffect = Effect.fn("Tool.assertExternalDirec
+   if (options?.bypass) return false
+ 
+   const ins = yield* InstanceState.context
+-  const full = process.platform === "win32" ? FSUtil.normalizePath(target) : target
++  const full = target
+   if (containsPath(full, ins)) return false
+ 
+   const kind = options?.kind ?? "file"
+   const dir = kind === "directory" ? full : path.dirname(full)
+-  const glob =
+-    process.platform === "win32"
+-      ? FSUtil.normalizePathPattern(path.join(dir, "*"))
+-      : path.join(dir, "*").replaceAll("\\", "/")
++  const glob = path.join(dir, "*").replaceAll("\\", "/")
+ 
+   yield* ctx.ask({
+     permission: "external_directory",
+diff --git a/packages/opencode/src/tool/read.ts b/packages/opencode/src/tool/read.ts
+index 678ed44..ac7c20a 100644
+--- a/packages/opencode/src/tool/read.ts
++++ b/packages/opencode/src/tool/read.ts
+@@ -185,8 +185,6 @@ export const ReadTool = Tool.define<
+         case ".zip":
+         case ".tar":
+         case ".gz":
+-        case ".exe":
+-        case ".dll":
+         case ".so":
+         case ".class":
+         case ".jar":
+@@ -206,7 +204,6 @@ export const ReadTool = Tool.define<
+         case ".obj":
+         case ".o":
+         case ".a":
+-        case ".lib":
+         case ".wasm":
+         case ".pyc":
+         case ".pyo":
+@@ -235,9 +232,6 @@ export const ReadTool = Tool.define<
+       if (!path.isAbsolute(filepath)) {
+         filepath = path.resolve(instance.directory, filepath)
+       }
+-      if (process.platform === "win32") {
+-        filepath = FSUtil.normalizePath(filepath)
+-      }
+       const title = path.relative(instance.worktree, filepath)
+ 
+       const stat = yield* fs.stat(filepath).pipe(
+diff --git a/packages/opencode/src/tool/registry.ts b/packages/opencode/src/tool/registry.ts
+index 9167cb3..55d89e3 100644
+--- a/packages/opencode/src/tool/registry.ts
++++ b/packages/opencode/src/tool/registry.ts
+@@ -188,7 +188,7 @@ const layer = Layer.effect(
+         for (const match of matches) {
+           const namespace = path.basename(match, path.extname(match))
+           // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
+-          // Import it as `file://` so Node on Windows accepts the dynamic import.
++          // Import it as `file://` so the dynamic import always resolves.
+           const mod = yield* Effect.promise(() => import(pathToFileURL(match).href))
+           for (const [id, def] of Object.entries(mod)) {
+             if (!isPluginTool(def)) continue
+diff --git a/packages/opencode/src/tool/write.ts b/packages/opencode/src/tool/write.ts
+index 37be6d8..d9fc8ed 100644
+--- a/packages/opencode/src/tool/write.ts
++++ b/packages/opencode/src/tool/write.ts
+@@ -74,10 +74,9 @@ export const WriteTool = Tool.define(
+           let output = "Wrote file successfully."
+           yield* lsp.touchFile(filepath, "document")
+           const diagnostics = yield* lsp.diagnostics()
+-          const normalizedFilepath = FSUtil.normalizePath(filepath)
+           let projectDiagnosticsCount = 0
+           for (const [file, issues] of Object.entries(diagnostics)) {
+-            const current = file === normalizedFilepath
++            const current = file === filepath
+             if (!current && projectDiagnosticsCount >= MAX_PROJECT_DIAGNOSTICS_FILES) continue
+             const block = LSP.Diagnostic.report(current ? filepath : file, issues)
+             if (!block) continue
+diff --git a/packages/opencode/src/util/archive.ts b/packages/opencode/src/util/archive.ts
+index 8fc5497..f1ee80a 100644
+--- a/packages/opencode/src/util/archive.ts
++++ b/packages/opencode/src/util/archive.ts
+@@ -1,16 +1,6 @@
+-import path from "path"
+ import * as Process from "./process"
+ 
+ export async function extractZip(zipPath: string, destDir: string) {
+-  if (process.platform === "win32") {
+-    const winZipPath = path.resolve(zipPath)
+-    const winDestDir = path.resolve(destDir)
+-    // $global:ProgressPreference suppresses PowerShell's blue progress bar popup
+-    const cmd = `$global:ProgressPreference = 'SilentlyContinue'; Expand-Archive -Path '${winZipPath}' -DestinationPath '${winDestDir}' -Force`
+-    await Process.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd])
+-    return
+-  }
+-
+   await Process.run(["unzip", "-o", "-q", zipPath, "-d", destDir])
+ }
+ 
+diff --git a/packages/opencode/src/util/filesystem.ts b/packages/opencode/src/util/filesystem.ts
+index 78a8917..7b36999 100644
+--- a/packages/opencode/src/util/filesystem.ts
++++ b/packages/opencode/src/util/filesystem.ts
+@@ -1,7 +1,7 @@
+ import { chmod, mkdir, readFile, stat as statFile, writeFile } from "fs/promises"
+ import { createWriteStream, existsSync, statSync } from "fs"
+ import { realpathSync } from "fs"
+-import { dirname, isAbsolute, join, resolve as pathResolve, win32 } from "path"
++import { dirname, isAbsolute, join, resolve as pathResolve } from "path"
+ import { Readable } from "stream"
+ import { pipeline } from "stream/promises"
+ import { Glob } from "@opencode-ai/core/util/glob"
+@@ -107,39 +107,14 @@ export async function mimeType(p: string): Promise<string> {
+   return lookup(p) || "application/octet-stream"
+ }
+ 
+-/**
+- * On Windows, normalize a path to its canonical casing using the filesystem.
+- * This is needed because Windows paths are case-insensitive but LSP servers
+- * may return paths with different casing than what we send them.
+- */
+-export function normalizePath(p: string): string {
+-  if (process.platform !== "win32") return p
+-  const resolved = win32.normalize(win32.resolve(windowsPath(p)))
+-  try {
+-    return realpathSync.native(resolved)
+-  } catch {
+-    return resolved
+-  }
+-}
+-
+-export function normalizePathPattern(p: string): string {
+-  if (process.platform !== "win32") return p
+-  if (p === "*") return p
+-  const match = p.match(/^(.*)[\\/]\*$/)
+-  if (!match) return normalizePath(p)
+-  const dir = /^[A-Za-z]:$/.test(match[1]) ? match[1] + "\\" : match[1]
+-  return join(normalizePath(dir), "*")
+-}
+-
+-// We cannot rely on path.resolve() here because git.exe may come from Git Bash, Cygwin, or MSYS2, so we need to translate these paths at the boundary.
+ // Also resolves symlinks so that callers using the result as a cache key
+ // always get the same canonical path for a given physical directory.
+ export function resolve(p: string): string {
+-  const resolved = pathResolve(windowsPath(p))
++  const resolved = pathResolve(p)
+   try {
+-    return normalizePath(realpathSync(resolved))
++    return realpathSync(resolved)
+   } catch (e) {
+-    if (isEnoent(e)) return normalizePath(resolved)
++    if (isEnoent(e)) return resolved
+     throw e
+   }
+ }
+@@ -150,19 +125,6 @@ export function resolveFilePath(root: string, file: string): string {
+   return pathResolve(root, raw)
+ }
+ 
+-export function windowsPath(p: string): string {
+-  if (process.platform !== "win32") return p
+-  return (
+-    p
+-      .replace(/^\/([a-zA-Z]):(?:[\\/]|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      // Git Bash for Windows paths are typically /<drive>/...
+-      .replace(/^\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      // Cygwin git paths are typically /cygdrive/<drive>/...
+-      .replace(/^\/cygdrive\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      // WSL paths are typically /mnt/<drive>/...
+-      .replace(/^\/mnt\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-  )
+-}
+ export function overlaps(a: string, b: string) {
+   return FSUtil.overlaps(a, b)
+ }
+diff --git a/packages/opencode/src/util/process.ts b/packages/opencode/src/util/process.ts
+index 173210f..657c3c3 100644
+--- a/packages/opencode/src/util/process.ts
++++ b/packages/opencode/src/util/process.ts
+@@ -65,7 +65,6 @@ export function spawn(cmd: string[], opts: Options = {}): Child {
+     shell: opts.shell,
+     env: opts.env === null ? {} : opts.env ? { ...process.env, ...opts.env } : undefined,
+     stdio: [opts.stdin ?? "ignore", opts.stdout ?? "ignore", opts.stderr ?? "ignore"],
+-    windowsHide: process.platform === "win32",
+   })
+ 
+   let closed = false
+@@ -149,16 +148,6 @@ export async function run(cmd: string[], opts: RunOptions = {}): Promise<Result>
+ export async function stop(proc: ChildProcess) {
+   if (proc.exitCode !== null || proc.signalCode !== null) return
+ 
+-  if (process.platform !== "win32" || !proc.pid) {
+-    proc.kill()
+-    return
+-  }
+-
+-  const out = await run(["taskkill", "/pid", String(proc.pid), "/T", "/F"], {
+-    nothrow: true,
+-  })
+-
+-  if (out.code === 0) return
+   proc.kill()
+ }
+ 
+diff --git a/packages/opencode/src/util/wildcard.ts b/packages/opencode/src/util/wildcard.ts
+index b2affbf..1cf94d4 100644
+--- a/packages/opencode/src/util/wildcard.ts
++++ b/packages/opencode/src/util/wildcard.ts
+@@ -14,8 +14,7 @@ export function match(str: string, pattern: string) {
+     escaped = escaped.slice(0, -3) + "( .*)?"
+   }
+ 
+-  const flags = process.platform === "win32" ? "si" : "s"
+-  return new RegExp("^" + escaped + "$", flags).test(str)
++  return new RegExp("^" + escaped + "$", "s").test(str)
+ }
+ 
+ export function all(input: string, patterns: Record<string, any>) {
+diff --git a/packages/opencode/src/worktree/index.ts b/packages/opencode/src/worktree/index.ts
+index a0c43ed..e32570a 100644
+--- a/packages/opencode/src/worktree/index.ts
++++ b/packages/opencode/src/worktree/index.ts
+@@ -296,7 +296,7 @@ const layer: Layer.Layer<
+       const abs = pathSvc.resolve(input)
+       const real = yield* fs.realPath(abs).pipe(Effect.catch(() => Effect.succeed(abs)))
+       const normalized = pathSvc.normalize(real)
+-      return process.platform === "win32" ? normalized.toLowerCase() : normalized
++      return normalized
+     })
+ 
+     function parseWorktreeList(text: string) {
+@@ -369,7 +369,7 @@ const layer: Layer.Layer<
+       return Effect.tryPromise({
+         try: async () => {
+           const fsp = await import("fs/promises")
+-          const attempts = process.platform === "win32" ? 50 : 5
++          const attempts = 5
+           for (const attempt of Array.from({ length: attempts }, (_, i) => i)) {
+             try {
+               await fsp.rm(target, { recursive: true, force: true })
+@@ -393,7 +393,7 @@ const layer: Layer.Layer<
+ 
+       const directory = yield* canonical(input.directory)
+ 
+-      // Preserve the loaded path casing for the store cache; `directory` is lowercased on Windows.
++      // Preserve the loaded path casing for the store cache.
+       if (directory !== (yield* canonical(ctx.worktree))) yield* store.disposeDirectory(input.directory)
+ 
+       const list = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
+@@ -413,7 +413,7 @@ const layer: Layer.Layer<
+         return true
+       }
+ 
+-      // Git may return the original casing when a caller supplied a normalized Windows path.
++      // Git may return the original casing for the same directory.
+       yield* store.disposeDirectory(entry.path)
+       yield* stopFsmonitor(entry.path)
+       const removed = yield* git(["worktree", "remove", "--force", entry.path], { cwd: ctx.worktree })
+@@ -460,7 +460,7 @@ const layer: Layer.Layer<
+ 
+     const runStartCommand = Effect.fnUntraced(
+       function* (directory: string, cmd: string) {
+-        const [shell, args] = process.platform === "win32" ? ["cmd", ["/c", cmd]] : ["bash", ["-lc", cmd]]
++        const [shell, args] = ["bash", ["-lc", cmd]]
+         const result = yield* appProcess.run(
+           ChildProcess.make(shell, args as string[], { cwd: directory, extendEnv: true, stdin: "ignore" }),
+         )

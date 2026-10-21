@@ -1,0 +1,1694 @@
+diff --git a/packages/opencode/src/cli/cmd/tui.ts b/packages/opencode/src/cli/cmd/tui.ts
+index 3a837ba..9584ba2 100644
+--- a/packages/opencode/src/cli/cmd/tui.ts
++++ b/packages/opencode/src/cli/cmd/tui.ts
+@@ -10,8 +10,6 @@ import { withNetworkOptions, resolveNetworkOptionsNoConfig, hasArg } from "@/cli
+ import { Filesystem } from "@/util/filesystem"
+ import type { GlobalEvent } from "@opencode-ai/sdk/v2"
+ import type { EventSource } from "@opencode-ai/tui/context/sdk"
+-import type { UpdateNotice, UpdateSource } from "@opencode-ai/tui"
+-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+ import { writeHeapSnapshot } from "v8"
+ import { ServerAuth } from "@/server/auth"
+ import { validateSession } from "../tui/validate-session"
+@@ -51,43 +49,6 @@ function createEventSource(client: RpcClient): EventSource {
+   }
+ }
+ 
+-// Mirrors the V2 CLI updater: the TUI process checks every 10 minutes and installs on this machine,
+-// but only when the user picks an option in the /update dialog.
+-function createUpdater(latest: () => Promise<UpdateNotice | undefined>): UpdateSource {
+-  const listeners = new Set<(notice: UpdateNotice) => void>()
+-  let current: UpdateNotice | undefined
+-  const check = () =>
+-    latest()
+-      .then((notice) => {
+-        if (!notice || JSON.stringify(notice) === JSON.stringify(current)) return
+-        current = notice
+-        listeners.forEach((notify) => notify(notice))
+-      })
+-      .catch(() => {})
+-  setTimeout(check, 1000).unref?.()
+-  setInterval(check, 10 * 60 * 1000).unref?.()
+-  return {
+-    subscribe: (notify) => {
+-      if (current) notify(current)
+-      listeners.add(notify)
+-      return () => listeners.delete(notify)
+-    },
+-    check: async () => {
+-      const { Installation } = await import("@/installation")
+-      // A failed check leaves latest unset, which /update reports as "Couldn't check for updates."
+-      const latest = await Installation.latest(await Installation.method()).catch(() => undefined)
+-      return { current: InstallationVersion, latest }
+-    },
+-    apply: async (target) => {
+-      const { Installation } = await import("@/installation")
+-      const method = await Installation.method()
+-      if (method === "unknown") throw new Error("Installation method not found")
+-      if (target.type === "major") return Installation.upgradeMajor(method)
+-      return Installation.upgrade(method, target.version)
+-    },
+-  }
+-}
+-
+ async function target() {
+   if (typeof OPENCODE_WORKER_PATH !== "undefined") return OPENCODE_WORKER_PATH
+   const dist = new URL("./cli/tui/worker.js", import.meta.url)
+@@ -301,7 +262,6 @@ export const TuiThreadCommand = cmd({
+         return
+       }
+ 
+-      const updater = createUpdater(async () => await client.call("checkUpgrade", { directory: cwd }))
+ 
+       try {
+         const { Effect } = await import("effect")
+@@ -321,7 +281,6 @@ export const TuiThreadCommand = cmd({
+             fetch: transport.fetch,
+             headers: transport.headers,
+             events: transport.events,
+-            updater,
+             args: {
+               continue: args.continue,
+               sessionID: args.session,
+diff --git a/packages/opencode/src/cli/cmd/uninstall.ts b/packages/opencode/src/cli/cmd/uninstall.ts
+deleted file mode 100644
+index 0afdc51..0000000
+--- a/packages/opencode/src/cli/cmd/uninstall.ts
++++ /dev/null
+@@ -1,353 +0,0 @@
+-import type { Argv } from "yargs"
+-import { UI } from "../ui"
+-import * as prompts from "@clack/prompts"
+-import { Installation } from "../../installation"
+-import { Global } from "@opencode-ai/core/global"
+-import fs from "fs/promises"
+-import path from "path"
+-import os from "os"
+-import { Filesystem } from "@/util/filesystem"
+-import { Process } from "@/util/process"
+-
+-interface UninstallArgs {
+-  keepConfig: boolean
+-  keepData: boolean
+-  dryRun: boolean
+-  force: boolean
+-}
+-
+-interface RemovalTargets {
+-  directories: Array<{ path: string; label: string; keep: boolean }>
+-  shellConfig: string | null
+-  binary: string | null
+-}
+-
+-export const UninstallCommand = {
+-  command: "uninstall",
+-  describe: "uninstall opencode and remove all related files",
+-  builder: (yargs: Argv) =>
+-    yargs
+-      .option("keep-config", {
+-        alias: "c",
+-        type: "boolean",
+-        describe: "keep configuration files",
+-        default: false,
+-      })
+-      .option("keep-data", {
+-        alias: "d",
+-        type: "boolean",
+-        describe: "keep session data and snapshots",
+-        default: false,
+-      })
+-      .option("dry-run", {
+-        type: "boolean",
+-        describe: "show what would be removed without removing",
+-        default: false,
+-      })
+-      .option("force", {
+-        alias: "f",
+-        type: "boolean",
+-        describe: "skip confirmation prompts",
+-        default: false,
+-      }),
+-
+-  handler: async (args: UninstallArgs) => {
+-    UI.empty()
+-    UI.println(UI.logo("  "))
+-    UI.empty()
+-    prompts.intro("Uninstall OpenCode")
+-
+-    const method = await Installation.method()
+-    prompts.log.info(`Installation method: ${method}`)
+-
+-    const targets = await collectRemovalTargets(args, method)
+-
+-    await showRemovalSummary(targets, method)
+-
+-    if (!args.force && !args.dryRun) {
+-      const confirm = await prompts.confirm({
+-        message: "Are you sure you want to uninstall?",
+-        initialValue: false,
+-      })
+-      if (!confirm || prompts.isCancel(confirm)) {
+-        prompts.outro("Cancelled")
+-        return
+-      }
+-    }
+-
+-    if (args.dryRun) {
+-      prompts.log.warn("Dry run - no changes made")
+-      prompts.outro("Done")
+-      return
+-    }
+-
+-    await executeUninstall(method, targets)
+-
+-    prompts.outro("Done")
+-  },
+-}
+-
+-async function collectRemovalTargets(args: UninstallArgs, method: Installation.Method): Promise<RemovalTargets> {
+-  const directories: RemovalTargets["directories"] = [
+-    { path: Global.Path.data, label: "Data", keep: args.keepData },
+-    { path: Global.Path.cache, label: "Cache", keep: false },
+-    { path: Global.Path.config, label: "Config", keep: args.keepConfig },
+-    { path: Global.Path.state, label: "State", keep: false },
+-  ]
+-
+-  const shellConfig = method === "curl" ? await getShellConfigFile() : null
+-  const binary = method === "curl" ? process.execPath : null
+-
+-  return { directories, shellConfig, binary }
+-}
+-
+-async function showRemovalSummary(targets: RemovalTargets, method: Installation.Method) {
+-  prompts.log.message("The following will be removed:")
+-
+-  for (const dir of targets.directories) {
+-    const exists = await fs
+-      .access(dir.path)
+-      .then(() => true)
+-      .catch(() => false)
+-    if (!exists) continue
+-
+-    const size = await getDirectorySize(dir.path)
+-    const sizeStr = formatSize(size)
+-    const status = dir.keep ? UI.Style.TEXT_DIM + "(keeping)" : ""
+-    const prefix = dir.keep ? "○" : "✓"
+-
+-    prompts.log.info(`  ${prefix} ${dir.label}: ${shortenPath(dir.path)} ${UI.Style.TEXT_DIM}(${sizeStr})${status}`)
+-  }
+-
+-  if (targets.binary) {
+-    prompts.log.info(`  ✓ Binary: ${shortenPath(targets.binary)}`)
+-  }
+-
+-  if (targets.shellConfig) {
+-    prompts.log.info(`  ✓ Shell PATH in ${shortenPath(targets.shellConfig)}`)
+-  }
+-
+-  if (method !== "curl" && method !== "unknown") {
+-    const cmds: Record<string, string> = {
+-      npm: "npm uninstall -g opencode-ai",
+-      pnpm: "pnpm uninstall -g opencode-ai",
+-      bun: "bun remove -g opencode-ai",
+-      yarn: "yarn global remove opencode-ai",
+-      brew: "brew uninstall opencode",
+-      choco: "choco uninstall opencode",
+-      scoop: "scoop uninstall opencode",
+-    }
+-    prompts.log.info(`  ✓ Package: ${cmds[method] || method}`)
+-  }
+-}
+-
+-async function executeUninstall(method: Installation.Method, targets: RemovalTargets) {
+-  const spinner = prompts.spinner()
+-  const errors: string[] = []
+-
+-  for (const dir of targets.directories) {
+-    if (dir.keep) {
+-      prompts.log.step(`Skipping ${dir.label} (--keep-${dir.label.toLowerCase()})`)
+-      continue
+-    }
+-
+-    const exists = await fs
+-      .access(dir.path)
+-      .then(() => true)
+-      .catch(() => false)
+-    if (!exists) continue
+-
+-    spinner.start(`Removing ${dir.label}...`)
+-    const err = await fs.rm(dir.path, { recursive: true, force: true }).catch((e) => e)
+-    if (err) {
+-      spinner.stop(`Failed to remove ${dir.label}`, 1)
+-      errors.push(`${dir.label}: ${err.message}`)
+-      continue
+-    }
+-    spinner.stop(`Removed ${dir.label}`)
+-  }
+-
+-  if (targets.shellConfig) {
+-    spinner.start("Cleaning shell config...")
+-    const err = await cleanShellConfig(targets.shellConfig).catch((e) => e)
+-    if (err) {
+-      spinner.stop("Failed to clean shell config", 1)
+-      errors.push(`Shell config: ${err.message}`)
+-    } else {
+-      spinner.stop("Cleaned shell config")
+-    }
+-  }
+-
+-  if (method !== "curl" && method !== "unknown") {
+-    const cmds: Record<string, string[]> = {
+-      npm: ["npm", "uninstall", "-g", "opencode-ai"],
+-      pnpm: ["pnpm", "uninstall", "-g", "opencode-ai"],
+-      bun: ["bun", "remove", "-g", "opencode-ai"],
+-      yarn: ["yarn", "global", "remove", "opencode-ai"],
+-      brew: ["brew", "uninstall", "opencode"],
+-      choco: ["choco", "uninstall", "opencode"],
+-      scoop: ["scoop", "uninstall", "opencode"],
+-    }
+-
+-    const cmd = cmds[method]
+-    if (cmd) {
+-      spinner.start(`Running ${cmd.join(" ")}...`)
+-      const result = await Process.run(method === "choco" ? ["choco", "uninstall", "opencode", "-y", "-r"] : cmd, {
+-        nothrow: true,
+-      })
+-      if (result.code !== 0) {
+-        spinner.stop(`Package manager uninstall failed: exit code ${result.code}`, 1)
+-        const text = `${result.stdout.toString("utf8")}\n${result.stderr.toString("utf8")}`
+-        if (method === "choco" && text.includes("not running from an elevated command shell")) {
+-          prompts.log.warn(`You may need to run '${cmd.join(" ")}' from an elevated command shell`)
+-        } else {
+-          prompts.log.warn(`You may need to run manually: ${cmd.join(" ")}`)
+-        }
+-      } else {
+-        spinner.stop("Package removed")
+-      }
+-    }
+-  }
+-
+-  if (method === "curl" && targets.binary) {
+-    UI.empty()
+-    prompts.log.message("To finish removing the binary, run:")
+-    prompts.log.info(`  rm "${targets.binary}"`)
+-
+-    const binDir = path.dirname(targets.binary)
+-    if (binDir.includes(".opencode")) {
+-      prompts.log.info(`  rmdir "${binDir}" 2>/dev/null`)
+-    }
+-  }
+-
+-  if (errors.length > 0) {
+-    UI.empty()
+-    prompts.log.warn("Some operations failed:")
+-    for (const err of errors) {
+-      prompts.log.error(`  ${err}`)
+-    }
+-  }
+-
+-  UI.empty()
+-  prompts.log.success("Thank you for using OpenCode!")
+-}
+-
+-async function getShellConfigFile(): Promise<string | null> {
+-  const shell = path.basename(process.env.SHELL || "bash")
+-  const home = os.homedir()
+-  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(home, ".config")
+-
+-  const configFiles: Record<string, string[]> = {
+-    fish: [path.join(xdgConfig, "fish", "config.fish")],
+-    zsh: [
+-      path.join(home, ".zshrc"),
+-      path.join(home, ".zshenv"),
+-      path.join(xdgConfig, "zsh", ".zshrc"),
+-      path.join(xdgConfig, "zsh", ".zshenv"),
+-    ],
+-    bash: [
+-      path.join(home, ".bashrc"),
+-      path.join(home, ".bash_profile"),
+-      path.join(home, ".profile"),
+-      path.join(xdgConfig, "bash", ".bashrc"),
+-      path.join(xdgConfig, "bash", ".bash_profile"),
+-    ],
+-    ash: [path.join(home, ".ashrc"), path.join(home, ".profile")],
+-    sh: [path.join(home, ".profile")],
+-  }
+-
+-  const candidates = configFiles[shell] || configFiles.bash
+-
+-  for (const file of candidates) {
+-    const exists = await fs
+-      .access(file)
+-      .then(() => true)
+-      .catch(() => false)
+-    if (!exists) continue
+-
+-    const content = await Filesystem.readText(file).catch(() => "")
+-    if (content.includes("# opencode") || content.includes(".opencode/bin")) {
+-      return file
+-    }
+-  }
+-
+-  return null
+-}
+-
+-async function cleanShellConfig(file: string) {
+-  const content = await Filesystem.readText(file)
+-  const lines = content.split("\n")
+-
+-  const filtered: string[] = []
+-  let skip = false
+-
+-  for (const line of lines) {
+-    const trimmed = line.trim()
+-
+-    if (trimmed === "# opencode") {
+-      skip = true
+-      continue
+-    }
+-
+-    if (skip) {
+-      skip = false
+-      if (trimmed.includes(".opencode/bin") || trimmed.includes("fish_add_path")) {
+-        continue
+-      }
+-    }
+-
+-    if (
+-      (trimmed.startsWith("export PATH=") && trimmed.includes(".opencode/bin")) ||
+-      (trimmed.startsWith("fish_add_path") && trimmed.includes(".opencode"))
+-    ) {
+-      continue
+-    }
+-
+-    filtered.push(line)
+-  }
+-
+-  while (filtered.length > 0 && filtered[filtered.length - 1].trim() === "") {
+-    filtered.pop()
+-  }
+-
+-  const output = filtered.join("\n") + "\n"
+-  await Filesystem.write(file, output)
+-}
+-
+-async function getDirectorySize(dir: string): Promise<number> {
+-  let total = 0
+-
+-  const walk = async (current: string) => {
+-    const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => [])
+-
+-    for (const entry of entries) {
+-      const full = path.join(current, entry.name)
+-      if (entry.isDirectory()) {
+-        await walk(full)
+-        continue
+-      }
+-      if (entry.isFile()) {
+-        const stat = await fs.stat(full).catch(() => null)
+-        if (stat) total += stat.size
+-      }
+-    }
+-  }
+-
+-  await walk(dir)
+-  return total
+-}
+-
+-function formatSize(bytes: number): string {
+-  if (bytes < 1024) return `${bytes} B`
+-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+-}
+-
+-function shortenPath(p: string): string {
+-  const home = os.homedir()
+-  if (p.startsWith(home)) {
+-    return p.replace(home, "~")
+-  }
+-  return p
+-}
+diff --git a/packages/opencode/src/cli/cmd/upgrade.ts b/packages/opencode/src/cli/cmd/upgrade.ts
+deleted file mode 100644
+index b329317..0000000
+--- a/packages/opencode/src/cli/cmd/upgrade.ts
++++ /dev/null
+@@ -1,105 +0,0 @@
+-import type { Argv } from "yargs"
+-import { UI } from "../ui"
+-import * as prompts from "@clack/prompts"
+-import { Installation } from "../../installation"
+-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+-
+-export const UpgradeCommand = {
+-  command: "upgrade [target]",
+-  describe: "upgrade opencode to the latest or a specific version",
+-  builder: (yargs: Argv) => {
+-    return yargs
+-      .positional("target", {
+-        describe: "version to upgrade to, for ex '0.1.48' or 'v0.1.48'",
+-        type: "string",
+-      })
+-      .option("method", {
+-        alias: "m",
+-        describe: "installation method to use",
+-        type: "string",
+-        choices: ["curl", "npm", "pnpm", "bun", "brew", "choco", "scoop"],
+-      })
+-      .option("major", {
+-        describe: "upgrade to OpenCode 2 and remove OpenCode 1",
+-        type: "boolean",
+-      })
+-  },
+-  handler: async (args: { target?: string; method?: string; major?: boolean }) => {
+-    UI.empty()
+-    UI.println(UI.logo("  "))
+-    UI.empty()
+-    prompts.intro("Upgrade")
+-    const detectedMethod = await Installation.method()
+-    const method = (args.method as Installation.Method) ?? detectedMethod
+-    if (method === "unknown") {
+-      prompts.log.error(`opencode is installed to ${process.execPath} and may be managed by a package manager`)
+-      const install = await prompts.select({
+-        message: "Install anyways?",
+-        options: [
+-          { label: "Yes", value: true },
+-          { label: "No", value: false },
+-        ],
+-        initialValue: false,
+-      })
+-      if (!install) {
+-        prompts.outro("Done")
+-        return
+-      }
+-    }
+-    prompts.log.info("Using method: " + method)
+-
+-    if (args.major) {
+-      prompts.log.info(`From ${InstallationVersion} → OpenCode 2`)
+-      const spinner = prompts.spinner()
+-      spinner.start("Installing OpenCode 2...")
+-      const err = await Installation.upgradeMajor(method).catch((err) => err)
+-      if (err) {
+-        spinner.stop("Upgrade failed", 1)
+-        if (err instanceof Error) prompts.log.error(err.message)
+-        prompts.log.info(`To install OpenCode 2 manually, see ${Installation.MAJOR_INSTRUCTIONS}`)
+-        prompts.outro("Done")
+-        return
+-      }
+-      spinner.stop("OpenCode 2 installed")
+-      prompts.outro("Done")
+-      return
+-    }
+-
+-    const target = args.target
+-      ? args.target.replace(/^v/, "")
+-      : await Installation.latest(method).catch(() => undefined)
+-    if (!target) {
+-      prompts.log.error("Couldn't check for updates")
+-      prompts.outro("Done")
+-      return
+-    }
+-
+-    if (InstallationVersion === target) {
+-      prompts.log.warn(`opencode upgrade skipped: ${target} is already installed`)
+-      prompts.log.info("OpenCode 2 is available. Upgrade with `opencode upgrade --major`")
+-      prompts.outro("Done")
+-      return
+-    }
+-
+-    prompts.log.info(`From ${InstallationVersion} → ${target}`)
+-    const spinner = prompts.spinner()
+-    spinner.start("Upgrading...")
+-    const err = await Installation.upgrade(method, target).catch((err) => err)
+-    if (err) {
+-      spinner.stop("Upgrade failed", 1)
+-      if (err instanceof Installation.UpgradeFailedError) {
+-        // necessary because choco only allows install/upgrade in elevated terminals
+-        if (method === "choco" && err.stderr.includes("not running from an elevated command shell")) {
+-          prompts.log.error("Please run the terminal as Administrator and try again")
+-        } else {
+-          prompts.log.error(err.stderr)
+-        }
+-      } else if (err instanceof Error) prompts.log.error(err.message)
+-      prompts.outro("Done")
+-      return
+-    }
+-    spinner.stop("Upgrade complete")
+-    prompts.log.info("OpenCode 2 is available. Upgrade with `opencode upgrade --major`")
+-    prompts.outro("Done")
+-  },
+-}
+diff --git a/packages/opencode/src/cli/tui/worker.ts b/packages/opencode/src/cli/tui/worker.ts
+index e6aa516..51918e2 100644
+--- a/packages/opencode/src/cli/tui/worker.ts
++++ b/packages/opencode/src/cli/tui/worker.ts
+@@ -1,7 +1,6 @@
+ import { Server } from "@/server/server"
+ import { InstanceRuntime } from "@/project/instance-runtime"
+ import { Rpc } from "@/util/rpc"
+-import { upgrade } from "@/cli/upgrade"
+ import { Config } from "@/config/config"
+ import { GlobalBus } from "@/bus/global"
+ import { ServerAuth } from "@/server/auth"
+@@ -56,10 +55,6 @@ export const rpc = {
+     server = await Server.listen(input)
+     return { url: server.url.toString() }
+   },
+-  async checkUpgrade(input: { directory: string }) {
+-    await InstanceRuntime.load({ directory: input.directory })
+-    return upgrade().catch(() => undefined)
+-  },
+   async reload() {
+     await AppRuntime.runPromise(
+       Effect.gen(function* () {
+diff --git a/packages/opencode/src/cli/upgrade.ts b/packages/opencode/src/cli/upgrade.ts
+deleted file mode 100644
+index 579de52..0000000
+--- a/packages/opencode/src/cli/upgrade.ts
++++ /dev/null
+@@ -1,37 +0,0 @@
+-import { Config } from "@/config/config"
+-import { AppRuntime } from "@/effect/app-runtime"
+-import { Flag } from "@opencode-ai/core/flag/flag"
+-import { Installation } from "@/installation"
+-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+-
+-// Checking never installs anything. Updates only happen when the user runs `/update` or `opencode upgrade`.
+-export function shouldNotify(input: {
+-  autoupdate: boolean | "notify" | undefined
+-  disabled: boolean
+-  always: boolean
+-  current: string
+-  latest: string
+-}) {
+-  if (input.autoupdate === false || input.disabled) return false
+-  if (input.always) return true
+-  return Installation.isUpdate(input.current, input.latest)
+-}
+-
+-// Returns undefined when checks are disabled or fail, so the TUI only suggests OpenCode 2 after a successful check.
+-export async function upgrade() {
+-  const config = await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.getGlobal()))
+-  if (config.autoupdate === false || Flag.OPENCODE_DISABLE_AUTOUPDATE) return
+-  const latest = await Installation.latest(await Installation.method()).catch(() => {})
+-  if (!latest) return
+-  if (
+-    shouldNotify({
+-      autoupdate: config.autoupdate,
+-      disabled: Flag.OPENCODE_DISABLE_AUTOUPDATE,
+-      always: Flag.OPENCODE_ALWAYS_NOTIFY_UPDATE,
+-      current: InstallationVersion,
+-      latest,
+-    })
+-  )
+-    return { type: "available" as const, version: latest }
+-  return { type: "major" as const }
+-}
+diff --git a/packages/opencode/src/effect/app-runtime.ts b/packages/opencode/src/effect/app-runtime.ts
+index d010eb8..1e42a10 100644
+--- a/packages/opencode/src/effect/app-runtime.ts
++++ b/packages/opencode/src/effect/app-runtime.ts
+@@ -43,7 +43,6 @@ import { Project } from "@/project/project"
+ import { Vcs } from "@/project/vcs"
+ import { Workspace } from "@/control-plane/workspace"
+ import { Worktree } from "@/worktree"
+-import { Installation } from "@/installation"
+ import { SessionShare } from "@/share/session"
+ import { Npm } from "@opencode-ai/core/npm"
+ import { memoMap } from "@opencode-ai/core/effect/memo-map"
+@@ -101,8 +100,7 @@ export const AppLayer = AppNodeBuilderV1.build(
+     Vcs.node,
+     Workspace.node,
+     Worktree.node,
+-    Installation.node,
+-    SessionShare.node,
++      SessionShare.node,
+   ]),
+ ).pipe(Layer.provideMerge(AppNodeBuilderV1.build(Ripgrep.node)), Layer.provideMerge(Observability.layer))
+ 
+diff --git a/packages/opencode/src/index.ts b/packages/opencode/src/index.ts
+index 13540a7..120b325 100644
+--- a/packages/opencode/src/index.ts
++++ b/packages/opencode/src/index.ts
+@@ -5,8 +5,6 @@ import { GenerateCommand } from "./cli/cmd/generate"
+ import { ConsoleCommand } from "./cli/cmd/account"
+ import { ProvidersCommand } from "./cli/cmd/providers"
+ import { AgentCommand } from "./cli/cmd/agent"
+-import { UpgradeCommand } from "./cli/cmd/upgrade"
+-import { UninstallCommand } from "./cli/cmd/uninstall"
+ import { ModelsCommand } from "./cli/cmd/models"
+ import { UI } from "./cli/ui"
+ import { InstallationVersion } from "@opencode-ai/core/installation/version"
+@@ -88,8 +86,6 @@ const cli = yargs(args)
+   .command(ConsoleCommand)
+   .command(ProvidersCommand)
+   .command(AgentCommand)
+-  .command(UpgradeCommand)
+-  .command(UninstallCommand)
+   .command(ServeCommand)
+   .command(WebCommand)
+   .command(ModelsCommand)
+diff --git a/packages/opencode/src/installation/index.ts b/packages/opencode/src/installation/index.ts
+deleted file mode 100644
+index 439dc84..0000000
+--- a/packages/opencode/src/installation/index.ts
++++ /dev/null
+@@ -1,416 +0,0 @@
+-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+-import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
+-import { Effect, Layer, Schema, Context, Stream } from "effect"
+-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+-import { withTransientReadRetry } from "@/util/effect-http-client"
+-import { errorMessage } from "@/util/error"
+-import { ChildProcess } from "effect/unstable/process"
+-import { AppProcess } from "@opencode-ai/core/process"
+-import path from "path"
+-import { makeRuntime } from "@opencode-ai/core/effect/runtime"
+-import semver from "semver"
+-import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
+-import { NpmConfig } from "@opencode-ai/core/npm-config"
+-import { InstallationEvent } from "@opencode-ai/schema/installation-event"
+-
+-export type Method = "curl" | "npm" | "yarn" | "pnpm" | "bun" | "brew" | "scoop" | "choco" | "unknown"
+-
+-export type ReleaseType = "patch" | "minor" | "major"
+-
+-export const Event = InstallationEvent
+-
+-export function getReleaseType(current: string, latest: string): ReleaseType {
+-  const currMajor = semver.major(current)
+-  const currMinor = semver.minor(current)
+-  const newMajor = semver.major(latest)
+-  const newMinor = semver.minor(latest)
+-
+-  if (newMajor > currMajor) return "major"
+-  if (newMinor > currMinor) return "minor"
+-  return "patch"
+-}
+-
+-export const Info = Schema.Struct({
+-  version: Schema.String,
+-  latest: Schema.String,
+-}).annotate({ identifier: "InstallationInfo" })
+-export type Info = Schema.Schema.Type<typeof Info>
+-
+-export function userAgent(client = "cli") {
+-  return `opencode/${InstallationChannel}/${InstallationVersion}/${client}`
+-}
+-
+-export const USER_AGENT = userAgent()
+-
+-export function isPreview() {
+-  return InstallationChannel !== "latest"
+-}
+-
+-export function isLocal() {
+-  return InstallationChannel === "local"
+-}
+-
+-export class UpgradeFailedError extends Schema.TaggedErrorClass<UpgradeFailedError>()("UpgradeFailedError", {
+-  stderr: Schema.String,
+-}) {
+-  override get message() {
+-    return this.stderr
+-  }
+-}
+-
+-// OpenCode 1 only updates within its own major version. OpenCode 2 is offered separately through
+-// upgradeMajor, so package sources that already publish 2.x (such as Homebrew Core) must not be
+-// reported as a normal update.
+-export function isUpdate(current: string, latest: string) {
+-  if (!semver.valid(latest)) return false
+-  if (!semver.valid(current)) return semver.major(latest) === 1
+-  return semver.major(latest) === semver.major(current) && semver.gt(latest, current)
+-}
+-
+-// Every install method discovers OpenCode 1 releases from npm. opencode-ai only contains OpenCode 1;
+-// OpenCode 2 ships as @opencode/cli. Preview builds follow their own dist-tag, source builds follow latest.
+-const NPM_TAG = InstallationChannel === "local" ? "latest" : InstallationChannel
+-
+-// Response schemas for external version APIs
+-const NpmPackage = Schema.Struct({ version: Schema.String })
+-const BrewInfoV2 = Schema.Struct({
+-  formulae: Schema.Array(Schema.Struct({ versions: Schema.Struct({ stable: Schema.String }) })),
+-})
+-const ChocoPackage = Schema.Struct({
+-  d: Schema.Struct({ results: Schema.Array(Schema.Struct({ Version: Schema.String })) }),
+-})
+-
+-export interface Interface {
+-  readonly info: () => Effect.Effect<Info>
+-  readonly method: () => Effect.Effect<Method>
+-  readonly latest: (method?: Method) => Effect.Effect<string>
+-  readonly upgrade: (method: Method, target: string) => Effect.Effect<void, UpgradeFailedError>
+-  readonly upgradeMajor: (method: Method) => Effect.Effect<void, UpgradeFailedError>
+-}
+-
+-// OpenCode 2 ships under different package names but the same `opencode` binary, so package
+-// manager installs remove V1 first and restore it if the V2 install fails.
+-const MAJOR_INSTALL: Partial<Record<Method, { remove: string[]; install: string[]; restore: string[] }>> = {
+-  npm: {
+-    remove: ["npm", "uninstall", "-g", "opencode-ai"],
+-    install: ["npm", "install", "-g", "@opencode/cli"],
+-    restore: ["npm", "install", "-g", `opencode-ai@${InstallationVersion}`],
+-  },
+-  pnpm: {
+-    remove: ["pnpm", "remove", "-g", "opencode-ai"],
+-    install: ["pnpm", "add", "-g", "--allow-build=@opencode/cli", "@opencode/cli"],
+-    restore: ["pnpm", "add", "-g", `opencode-ai@${InstallationVersion}`],
+-  },
+-  bun: {
+-    remove: ["bun", "remove", "-g", "opencode-ai"],
+-    install: ["bun", "install", "-g", "--trust", "@opencode/cli"],
+-    restore: ["bun", "install", "-g", `opencode-ai@${InstallationVersion}`],
+-  },
+-  yarn: {
+-    remove: ["yarn", "global", "remove", "opencode-ai"],
+-    install: ["yarn", "global", "add", "@opencode/cli"],
+-    restore: ["yarn", "global", "add", `opencode-ai@${InstallationVersion}`],
+-  },
+-}
+-
+-export const MAJOR_INSTRUCTIONS = "https://opencode.ai/v2/docs"
+-
+-export class Service extends Context.Service<Service, Interface>()("@opencode/Installation") {}
+-
+-export const use = serviceUse(Service)
+-
+-const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Service> = Layer.effect(
+-  Service,
+-  Effect.gen(function* () {
+-    const http = yield* HttpClient.HttpClient
+-    const httpOk = HttpClient.filterStatusOk(withTransientReadRetry(http))
+-    const appProcess = yield* AppProcess.Service
+-
+-    const text = Effect.fnUntraced(
+-      function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
+-        const result = yield* appProcess.run(
+-          ChildProcess.make(cmd[0], cmd.slice(1), {
+-            cwd: opts?.cwd,
+-            env: opts?.env,
+-            extendEnv: true,
+-          }),
+-        )
+-        return result.stdout.toString("utf8")
+-      },
+-      Effect.catch(() => Effect.succeed("")),
+-    )
+-
+-    const run = Effect.fnUntraced(
+-      function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
+-        const result = yield* appProcess.run(
+-          ChildProcess.make(cmd[0], cmd.slice(1), {
+-            cwd: opts?.cwd,
+-            env: opts?.env,
+-            extendEnv: true,
+-          }),
+-        )
+-        return {
+-          code: result.exitCode,
+-          stdout: result.stdout.toString("utf8"),
+-          stderr: result.stderr.toString("utf8"),
+-        }
+-      },
+-      Effect.catch((err) => Effect.succeed({ code: 1, stdout: "", stderr: errorMessage(err) })),
+-    )
+-
+-    const getBrewFormula = Effect.fnUntraced(function* () {
+-      const tapFormula = yield* text(["brew", "list", "--formula", "anomalyco/tap/opencode"])
+-      if (tapFormula.includes("opencode")) return "anomalyco/tap/opencode"
+-      const coreFormula = yield* text(["brew", "list", "--formula", "opencode"])
+-      if (coreFormula.includes("opencode")) return "opencode"
+-      return "opencode"
+-    })
+-
+-    const upgradeFailure = (method: Method, result?: { code: number; stdout: string; stderr: string }) => {
+-      if (method === "choco") return "not running from an elevated command shell"
+-      if (result) return `Upgrade failed for ${method} (exit code ${result.code}).`
+-      return `Upgrade failed for ${method}.`
+-    }
+-
+-    const upgradeScriptShell = Effect.fnUntraced(function* () {
+-      const bashVersion = yield* text(["bash", "--version"])
+-      if (bashVersion) return "bash"
+-      return "sh"
+-    })
+-
+-    const upgradeCurl = Effect.fnUntraced(
+-      function* (target: string) {
+-        const response = yield* httpOk.execute(HttpClientRequest.get("https://opencode.ai/install"))
+-        const body = yield* response.text
+-        const bodyBytes = new TextEncoder().encode(body)
+-        const shell = yield* upgradeScriptShell()
+-        const result = yield* appProcess.run(
+-          ChildProcess.make(shell, [], {
+-            stdin: Stream.make(bodyBytes),
+-            env: { VERSION: target },
+-            extendEnv: true,
+-          }),
+-        )
+-        return {
+-          code: result.exitCode,
+-          stdout: result.stdout.toString("utf8"),
+-          stderr: result.stderr.toString("utf8"),
+-        }
+-      },
+-      Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
+-    )
+-
+-    const majorUpgrade = Effect.fnUntraced(function* (m: Method) {
+-      if (m === "curl") {
+-        // The V2 installer writes to the same ~/.opencode/bin/opencode path, replacing V1 in place.
+-        const response = yield* httpOk
+-          .execute(HttpClientRequest.get("https://opencode.ai/v2/install"))
+-          .pipe(Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })))
+-        const body = yield* response.text.pipe(
+-          Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
+-        )
+-        return yield* run([yield* upgradeScriptShell(), "-c", body])
+-      }
+-
+-      if (m === "brew") {
+-        const formula = yield* getBrewFormula()
+-        const env = { HOMEBREW_NO_AUTO_UPDATE: "1" }
+-        const removed = yield* run(["brew", "uninstall", formula], { env })
+-        if (removed.code !== 0) return removed
+-        const installed = yield* run(["brew", "install", "anomalyco/tap/opencode-v2"], { env })
+-        if (installed.code !== 0) yield* run(["brew", "install", formula], { env })
+-        return installed
+-      }
+-
+-      const steps = MAJOR_INSTALL[m]
+-      if (!steps)
+-        return yield* new UpgradeFailedError({
+-          stderr: `OpenCode 2 can't be installed automatically with ${m}. See ${MAJOR_INSTRUCTIONS}`,
+-        })
+-      const removed = yield* run(steps.remove)
+-      if (removed.code !== 0) return removed
+-      const installed = yield* run(steps.install)
+-      if (installed.code !== 0) yield* run(steps.restore)
+-      return installed
+-    })
+-
+-    const npmLatest = Effect.fnUntraced(function* () {
+-      const response = yield* httpOk.execute(
+-        HttpClientRequest.get(`${yield* NpmConfig.registry(process.cwd())}/opencode-ai/${NPM_TAG}`).pipe(
+-          HttpClientRequest.acceptJson,
+-        ),
+-      )
+-      const data = yield* HttpClientResponse.schemaBodyJson(NpmPackage)(response)
+-      return data.version
+-    })
+-
+-    // Chocolatey can only install versions its moderated community feed has published.
+-    const chocoHas = Effect.fnUntraced(function* (version: string) {
+-      const response = yield* httpOk.execute(
+-        HttpClientRequest.get(
+-          `https://community.chocolatey.org/api/v2/Packages?$filter=Id%20eq%20%27opencode%27%20and%20Version%20eq%20%27${encodeURIComponent(version)}%27&$select=Version`,
+-        ).pipe(HttpClientRequest.setHeaders({ Accept: "application/json;odata=verbose" })),
+-      )
+-      const data = yield* HttpClientResponse.schemaBodyJson(ChocoPackage)(response)
+-      return data.d.results.length > 0
+-    })
+-
+-    const tapVersion = Effect.fnUntraced(
+-      function* (formula: string) {
+-        const infoJson = yield* text(["brew", "info", "--json=v2", formula])
+-        const info = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BrewInfoV2))(infoJson)
+-        return info.formulae[0].versions.stable
+-      },
+-      Effect.orElseSucceed(() => undefined),
+-    )
+-
+-    const result: Interface = {
+-      info: Effect.fn("Installation.info")(function* () {
+-        return {
+-          version: InstallationVersion,
+-          latest: yield* result.latest(),
+-        }
+-      }),
+-      method: Effect.fn("Installation.method")(function* () {
+-        if (process.execPath.includes(path.join(".opencode", "bin"))) return "curl" as Method
+-        if (process.execPath.includes(path.join(".local", "bin"))) return "curl" as Method
+-        const exec = process.execPath.toLowerCase()
+-
+-        const checks: Array<{ name: Method; command: () => Effect.Effect<string> }> = [
+-          { name: "npm", command: () => text(["npm", "list", "-g", "--depth=0"]) },
+-          { name: "yarn", command: () => text(["yarn", "global", "list"]) },
+-          { name: "pnpm", command: () => text(["pnpm", "list", "-g", "--depth=0"]) },
+-          { name: "bun", command: () => text(["bun", "pm", "ls", "-g"]) },
+-          { name: "brew", command: () => text(["brew", "list", "--formula", "opencode"]) },
+-          { name: "scoop", command: () => text(["scoop", "list", "opencode"]) },
+-          { name: "choco", command: () => text(["choco", "list", "--limit-output", "opencode"]) },
+-        ]
+-
+-        checks.sort((a, b) => {
+-          const aMatches = exec.includes(a.name)
+-          const bMatches = exec.includes(b.name)
+-          if (aMatches && !bMatches) return -1
+-          if (!aMatches && bMatches) return 1
+-          return 0
+-        })
+-
+-        for (const check of checks) {
+-          const output = yield* check.command()
+-          const installedName =
+-            check.name === "brew" || check.name === "choco" || check.name === "scoop" ? "opencode" : "opencode-ai"
+-          if (output.includes(installedName)) {
+-            return check.name
+-          }
+-        }
+-
+-        return "unknown" as Method
+-      }),
+-      // Reports the installed version when there's no OpenCode 1 update this install method can deliver,
+-      // so callers offer OpenCode 2 through the major upgrade instead.
+-      latest: Effect.fn("Installation.latest")(function* (installMethod?: Method) {
+-        const method = installMethod || (yield* result.method())
+-        // Homebrew Core's opencode formula is OpenCode 2, so `brew upgrade` can't deliver an OpenCode 1 update.
+-        if (method === "brew" && !(yield* getBrewFormula()).includes("/")) return InstallationVersion
+-        return yield* Effect.gen(function* () {
+-          const found = yield* npmLatest()
+-          if (!isUpdate(InstallationVersion, found)) return InstallationVersion
+-          if (method === "choco" && !(yield* chocoHas(found))) return InstallationVersion
+-          return found
+-        }).pipe(Effect.timeout("10 seconds"))
+-      }, Effect.orDie),
+-      upgrade: Effect.fn("Installation.upgrade")(function* (m: Method, target: string) {
+-        if (semver.valid(target) && semver.major(target) >= 2)
+-          return yield* new UpgradeFailedError({
+-            stderr: `OpenCode ${target} is OpenCode 2. Upgrade with \`opencode upgrade --major\` or see ${MAJOR_INSTRUCTIONS}`,
+-          })
+-        let upgradeResult: { code: number; stdout: string; stderr: string } | undefined
+-        switch (m) {
+-          case "curl":
+-            upgradeResult = yield* upgradeCurl(target)
+-            break
+-          case "npm":
+-            upgradeResult = yield* run(["npm", "install", "-g", `opencode-ai@${target}`])
+-            break
+-          case "pnpm":
+-            upgradeResult = yield* run(["pnpm", "install", "-g", `opencode-ai@${target}`])
+-            break
+-          case "bun":
+-            upgradeResult = yield* run(["bun", "install", "-g", `opencode-ai@${target}`])
+-            break
+-          case "yarn":
+-            upgradeResult = yield* run(["yarn", "global", "add", `opencode-ai@${target}`])
+-            break
+-          case "brew": {
+-            const formula = yield* getBrewFormula()
+-            const env = { HOMEBREW_NO_AUTO_UPDATE: "1" }
+-            if (!formula.includes("/"))
+-              return yield* new UpgradeFailedError({
+-                stderr: `Homebrew Core's opencode formula is OpenCode 2, so Homebrew can't install OpenCode ${target}. Upgrade with \`opencode upgrade --major\`, or reinstall from anomalyco/tap/opencode to stay on OpenCode 1.`,
+-              })
+-            const tap = yield* run(["brew", "tap", "anomalyco/tap"], { env })
+-            if (tap.code !== 0) {
+-              upgradeResult = tap
+-              break
+-            }
+-            const repo = yield* text(["brew", "--repo", "anomalyco/tap"])
+-            const dir = repo.trim()
+-            if (dir) {
+-              const pull = yield* run(["git", "pull", "--ff-only"], { cwd: dir, env })
+-              if (pull.code !== 0) {
+-                upgradeResult = pull
+-                break
+-              }
+-            }
+-            // The tap is updated shortly after npm, so a just-published release may not be installable yet.
+-            const available = yield* tapVersion(formula)
+-            if (!available || semver.major(available) !== semver.major(target) || semver.lt(available, target))
+-              return yield* new UpgradeFailedError({
+-                stderr: `Homebrew can't install OpenCode ${target} yet: ${formula} is at ${available ?? "an unknown version"}. Try again in a few minutes.`,
+-              })
+-            upgradeResult = yield* run(["brew", "upgrade", formula], { env })
+-            break
+-          }
+-          case "choco":
+-            upgradeResult = yield* run(["choco", "upgrade", "opencode", `--version=${target}`, "-y"])
+-            break
+-          case "scoop":
+-            upgradeResult = yield* run(["scoop", "install", `opencode@${target}`])
+-            break
+-          default:
+-            return yield* new UpgradeFailedError({ stderr: `Unknown installation method: ${m}` })
+-        }
+-        if (!upgradeResult || upgradeResult.code !== 0) {
+-          return yield* new UpgradeFailedError({ stderr: upgradeFailure(m, upgradeResult) })
+-        }
+-        yield* Effect.logInfo("upgraded", {
+-          method: m,
+-          target,
+-          stdout: upgradeResult.stdout,
+-          stderr: upgradeResult.stderr,
+-        })
+-        yield* text([process.execPath, "--version"])
+-      }),
+-      upgradeMajor: Effect.fn("Installation.upgradeMajor")(function* (m: Method) {
+-        const outcome = yield* majorUpgrade(m)
+-        if (outcome.code !== 0) return yield* new UpgradeFailedError({ stderr: upgradeFailure(m, outcome) })
+-        yield* Effect.logInfo("upgraded major", { method: m, stdout: outcome.stdout, stderr: outcome.stderr })
+-      }),
+-    }
+-
+-    return Service.of(result)
+-  }),
+-)
+-
+-export const node = LayerNode.make({ service: Service, layer: layer, deps: [httpClient, AppProcess.node] })
+-
+-const { runPromise } = makeRuntime(Service, AppNodeBuilder.build(node))
+-
+-export const latest = (...args: Parameters<Interface["latest"]>) => runPromise((s) => s.latest(...args))
+-export const method = () => runPromise((s) => s.method())
+-export const upgrade = (...args: Parameters<Interface["upgrade"]>) => runPromise((s) => s.upgrade(...args))
+-export const upgradeMajor = (...args: Parameters<Interface["upgradeMajor"]>) =>
+-  runPromise((s) => s.upgradeMajor(...args))
+-
+-export * as Installation from "."
+diff --git a/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts b/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts
+index 5dded3a..864c3ad 100644
+--- a/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts
++++ b/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts
+@@ -6,7 +6,6 @@ import "@opencode-ai/core/account"
+ import "@/server/event"
+ import { Schema } from "effect"
+ import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+-import semver from "semver"
+ import { described } from "./metadata"
+ 
+ const GlobalHealth = Schema.Struct({
+@@ -48,29 +47,11 @@ const GlobalEventSchema = Schema.Struct({
+   ]),
+ }).annotate({ identifier: "GlobalEvent" })
+ 
+-export const GlobalUpgradeInput = Schema.Struct({
+-  target: Schema.String.check(
+-    Schema.makeFilter((value) => (semver.valid(value) === null ? "Expected a semantic version" : undefined)),
+-  ),
+-})
+-
+-const GlobalUpgradeResult = Schema.Union([
+-  Schema.Struct({
+-    success: Schema.Literal(true),
+-    version: Schema.String,
+-  }),
+-  Schema.Struct({
+-    success: Schema.Literal(false),
+-    error: Schema.String,
+-  }),
+-])
+-
+ export const GlobalPaths = {
+   health: "/global/health",
+   event: "/global/event",
+   config: "/global/config",
+   dispose: "/global/dispose",
+-  upgrade: "/global/upgrade",
+ } as const
+ 
+ export const GlobalApi = HttpApi.make("global").add(
+@@ -123,17 +104,6 @@ export const GlobalApi = HttpApi.make("global").add(
+           description: "Clean up and dispose all OpenCode instances, releasing all resources.",
+         }),
+       ),
+-      HttpApiEndpoint.post("upgrade", GlobalPaths.upgrade, {
+-        payload: GlobalUpgradeInput,
+-        success: described(GlobalUpgradeResult, "Upgrade result"),
+-        error: HttpApiError.BadRequest,
+-      }).annotateMerge(
+-        OpenApi.annotations({
+-          identifier: "global.upgrade",
+-          summary: "Upgrade opencode",
+-          description: "Upgrade opencode to the specified version.",
+-        }),
+-      ),
+     )
+     .annotateMerge(OpenApi.annotations({ title: "global", description: "Global server routes." })),
+ )
+diff --git a/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts b/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts
+index ac90903..fae404d 100644
+--- a/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts
++++ b/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts
+@@ -2,7 +2,6 @@ import { Config } from "@/config/config"
+ import { GlobalBus, type GlobalEvent as GlobalBusEvent } from "@/bus/global"
+ import { EffectBridge } from "@/effect/bridge"
+ import { EventV2 } from "@opencode-ai/core/event"
+-import { Installation } from "@/installation"
+ import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+ import { InstallationVersion } from "@opencode-ai/core/installation/version"
+ import { Effect, Queue } from "effect"
+@@ -11,7 +10,6 @@ import { HttpServerResponse } from "effect/unstable/http"
+ import { HttpApiBuilder } from "effect/unstable/httpapi"
+ import * as Sse from "effect/unstable/encoding/Sse"
+ import { RootHttpApi } from "../api"
+-import { GlobalUpgradeInput } from "../groups/global"
+ 
+ function eventData(data: unknown): Sse.Event {
+   return {
+@@ -60,7 +58,6 @@ function eventResponse() {
+ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handlers) =>
+   Effect.gen(function* () {
+     const config = yield* Config.Service
+-    const installation = yield* Installation.Service
+     const bridge = yield* EffectBridge.make()
+ 
+     const health = Effect.fn("GlobalHttpApi.health")(function* () {
+@@ -86,41 +83,11 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
+       return true
+     })
+ 
+-    const upgrade = Effect.fn("GlobalHttpApi.upgrade")(function* (ctx: { payload: typeof GlobalUpgradeInput.Type }) {
+-      const method = yield* installation.method()
+-      if (method === "unknown") {
+-        return HttpServerResponse.jsonUnsafe(
+-          { success: false as const, error: "Unknown installation method" },
+-          { status: 400 },
+-        )
+-      }
+-      const target = ctx.payload.target
+-      const result = yield* installation.upgrade(method, target).pipe(
+-        Effect.as({ success: true as const, version: target }),
+-        Effect.catch((err) =>
+-          Effect.succeed({
+-            success: false as const,
+-            error: err instanceof Error ? err.message : String(err),
+-          }),
+-        ),
+-      )
+-      if (!result.success) return HttpServerResponse.jsonUnsafe(result, { status: 500 })
+-      GlobalBus.emit("event", {
+-        directory: "global",
+-        payload: {
+-          type: Installation.Event.Updated.type,
+-          properties: { version: target },
+-        },
+-      })
+-      return HttpServerResponse.jsonUnsafe(result)
+-    })
+-
+     return handlers
+       .handle("health", health)
+       .handleRaw("event", event)
+       .handle("configGet", configGet)
+       .handle("configUpdate", configUpdate)
+       .handle("dispose", dispose)
+-      .handle("upgrade", upgrade)
+   }),
+ )
+diff --git a/packages/opencode/src/server/routes/instance/httpapi/server.ts b/packages/opencode/src/server/routes/instance/httpapi/server.ts
+index 94555ca..1ffae6e 100644
+--- a/packages/opencode/src/server/routes/instance/httpapi/server.ts
++++ b/packages/opencode/src/server/routes/instance/httpapi/server.ts
+@@ -15,7 +15,6 @@ import { Env } from "@/env"
+ import { EventV2Bridge } from "@/event-v2-bridge"
+ import { Format } from "@/format"
+ import { Git } from "@/git"
+-import { Installation } from "@/installation"
+ import { LSP } from "@/lsp/lsp"
+ import { MCP } from "@/mcp"
+ import { McpAuth } from "@/mcp/auth"
+@@ -256,7 +255,6 @@ const app = LayerNode.group([
+   Vcs.node,
+   Workspace.node,
+   Worktree.node,
+-  Installation.node,
+   SessionShare.node,
+   InstanceStore.node,
+   httpClient,
+diff --git a/packages/tui/src/app.tsx b/packages/tui/src/app.tsx
+index 1b21aaf..25b2cc4 100644
+--- a/packages/tui/src/app.tsx
++++ b/packages/tui/src/app.tsx
+@@ -59,7 +59,6 @@ import { PromptStashProvider } from "./component/prompt/stash"
+ import { ToastProvider, useToast } from "./ui/toast"
+ import { isDefaultTitle } from "./util/session"
+ import { KVProvider, useKV } from "./context/kv"
+-import { UpdateNotificationProvider, useUpdateNotification, type UpdateSource } from "./context/update-notification"
+ import * as Model from "./util/model"
+ import { ArgsProvider, useArgs, type Args } from "./context/args"
+ import { openUrl } from "@opencode-ai/core/open"
+@@ -148,7 +147,6 @@ export type TuiInput = {
+   headers?: RequestInit["headers"]
+   events?: EventSource
+   pluginHost: TuiPluginHost
+-  updater?: UpdateSource
+ }
+ 
+ function errorMessage(error: unknown) {
+@@ -298,12 +296,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+                                                               <PromptRefProvider>
+                                                                 <EditorContextProvider>
+                                                                   <LocationProvider>
+-                                                                    <UpdateNotificationProvider updater={input.updater}>
+                                                                       <App
+                                                                         onSnapshot={input.onSnapshot}
+                                                                         pluginHost={input.pluginHost}
+                                                                       />
+-                                                                    </UpdateNotificationProvider>
+                                                                   </LocationProvider>
+                                                                 </EditorContextProvider>
+                                                               </PromptRefProvider>
+@@ -371,7 +367,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
+   const pluginRuntime = usePluginRuntime()
+   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
+   const clipboard = useClipboard()
+-  const update = useUpdateNotification()
+ 
+   const api = createTuiApi(
+     createTuiApiAdapters({
+@@ -757,17 +752,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
+         },
+         category: "System",
+       },
+-      ...(update.open
+-        ? [
+-            {
+-              name: "opencode.update",
+-              title: "Update OpenCode",
+-              slashName: "update",
+-              run: () => update.open?.(),
+-              category: "System",
+-            },
+-          ]
+-        : []),
+       {
+         name: "opencode.debug",
+         title: "View debug info",
+diff --git a/packages/tui/src/component/dialog-update.tsx b/packages/tui/src/component/dialog-update.tsx
+deleted file mode 100644
+index 3b66249..0000000
+--- a/packages/tui/src/component/dialog-update.tsx
++++ /dev/null
+@@ -1,192 +0,0 @@
+-import { TextAttributes } from "@opentui/core"
+-import { createEffect, createMemo, createResource, createSignal, For, Match, Show, Switch } from "solid-js"
+-import { useTheme } from "../context/theme"
+-import { isVersionGreater, type UpdateState, type UpdateTarget } from "../context/update-notification"
+-import { useDialog } from "../ui/dialog"
+-import { useBindings } from "../keymap"
+-import { errorMessage } from "../util/error"
+-import { Spinner } from "./spinner"
+-import { openUrl } from "@opencode-ai/core/open"
+-
+-export const V2_ANNOUNCEMENT_URL = "https://anoma.ly/notes/opencode-2-0"
+-
+-type Version = { current: string; latest?: string }
+-
+-// A newer OpenCode 1 release uses the normal update flow; OpenCode 2.0 is only offered when OpenCode 1 is current.
+-export function updateTarget(version: Version): UpdateTarget {
+-  if (version.latest && isUpdate(version.current, version.latest)) return { type: "latest", version: version.latest }
+-  return { type: "major" }
+-}
+-
+-// Only a newer release in the installed major version is a normal update. OpenCode 2 has its own offer.
+-export function isUpdate(current: string, latest: string) {
+-  const major = (value: string) => value.replace(/^v/, "").split(".")[0]
+-  return major(latest) === major(current) && isVersionGreater(latest, current)
+-}
+-
+-export function DialogUpdate(props: {
+-  check: () => Promise<Version | undefined>
+-  state: () => UpdateState | undefined
+-  install: (target: UpdateTarget) => Promise<void>
+-  skip: (version: string) => void
+-  dismiss: () => void
+-  restart: () => void
+-}) {
+-  const dialog = useDialog()
+-  const { theme } = useTheme()
+-  const [error, setError] = createSignal<string>()
+-  const [active, setActive] = createSignal(0)
+-  const [check] = createResource(() =>
+-    props.check().catch((error: unknown) => {
+-      setError(errorMessage(error))
+-      return undefined
+-    }),
+-  )
+-
+-  const target = () => {
+-    const version = check()
+-    if (!version?.latest) return undefined
+-    return updateTarget(version)
+-  }
+-  const state = createMemo(() => {
+-    const current = props.state()
+-    if (current?.type === "installing" || current?.type === "installed") return current
+-    if (check.loading) return { type: "checking" as const }
+-    if (current?.type === "failed") return current
+-    const next = target()
+-    if (!next) return { type: "check-failed" as const, message: error() ?? "Couldn't check for updates." }
+-    if (next.type === "major") return { type: "major" as const }
+-    return { type: "available" as const, version: next.version }
+-  })
+-  const buttons = createMemo(() => {
+-    const current = state()
+-    if (current.type === "checking" || current.type === "installing") return []
+-    const next = target()
+-    const close = {
+-      label: next?.type === "major" ? "Dismiss" : "Skip",
+-      run: () => {
+-        if (current.type !== "installed" && next?.type === "major") props.dismiss()
+-        if (current.type !== "installed" && next?.type === "latest") props.skip(next.version)
+-        dialog.clear()
+-      },
+-    }
+-    if (current.type === "installed") return [close, { label: "Restart", run: props.restart }]
+-    if (!next) return [close]
+-    return [close, { label: next.type === "major" ? "Upgrade" : "Update", run: () => props.install(next) }]
+-  })
+-
+-  createEffect(() => setActive(Math.max(0, buttons().length - 1)))
+-
+-  const move = (offset: number) => {
+-    const count = buttons().length
+-    if (count) setActive((value) => (value + offset + count) % count)
+-  }
+-
+-  useBindings(() => ({
+-    bindings: [
+-      { key: "return", desc: "Confirm update action", group: "Dialog", cmd: () => void buttons()[active()]?.run() },
+-      { key: "left", desc: "Previous update action", group: "Dialog", cmd: () => move(-1) },
+-      { key: "shift+tab", desc: "Previous update action", group: "Dialog", cmd: () => move(-1) },
+-      { key: "right", desc: "Next update action", group: "Dialog", cmd: () => move(1) },
+-      { key: "tab", desc: "Next update action", group: "Dialog", cmd: () => move(1) },
+-    ],
+-  }))
+-
+-  return (
+-    <box paddingLeft={2} paddingRight={2} gap={1}>
+-      <box flexDirection="row" justifyContent="space-between">
+-        <text attributes={TextAttributes.BOLD} fg={theme.text}>
+-          {state().type === "installing"
+-            ? "Updating OpenCode"
+-            : state().type === "available" || state().type === "major" || state().type === "failed"
+-              ? "Update available"
+-              : "Update"}
+-        </text>
+-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+-          esc
+-        </text>
+-      </box>
+-      <box paddingBottom={1} gap={1}>
+-        <Show when={state()} keyed>
+-          {(current) => (
+-            <Switch>
+-              <Match when={current.type === "checking"}>
+-                <Spinner color={theme.text}>Checking for updates…</Spinner>
+-              </Match>
+-              <Match when={current.type === "available"}>
+-                <text fg={theme.textMuted} wrapMode="word">
+-                  An update is available. After installing, you'll be prompted to restart OpenCode.
+-                </text>
+-              </Match>
+-              <Match when={current.type === "installing" && current} keyed>
+-                {(installing) => (
+-                  <Spinner color={theme.text}>
+-                    {installing.target.type === "major"
+-                      ? "Installing OpenCode 2.0…"
+-                      : `Installing OpenCode ${installing.target.version}…`}
+-                  </Spinner>
+-                )}
+-              </Match>
+-              <Match when={current.type === "installed" && current} keyed>
+-                {(installed) => (
+-                  <text fg={theme.textMuted} wrapMode="word">
+-                    {installed.target.type === "major"
+-                      ? "Update successful! A restart is required. Run `opencode` to start OpenCode 2.0."
+-                      : "Update successful! A restart is required."}
+-                  </text>
+-                )}
+-              </Match>
+-              <Match when={current.type === "major"}>
+-                <box gap={1}>
+-                  <box>
+-                    <text fg={theme.textMuted} wrapMode="word">
+-                      OpenCode 2.0 is the next major release.
+-                    </text>
+-                    <text
+-                      fg={theme.textMuted}
+-                      wrapMode="word"
+-                      onMouseUp={() => {
+-                        openUrl(V2_ANNOUNCEMENT_URL).catch(() => {})
+-                      }}
+-                    >
+-                      Read more about it:{" "}
+-                      <a href={V2_ANNOUNCEMENT_URL} style={{ fg: theme.primary }}>
+-                        {V2_ANNOUNCEMENT_URL}
+-                      </a>
+-                    </text>
+-                  </box>
+-                  <text fg={theme.textMuted} wrapMode="word">
+-                    It contains some breaking changes.
+-                  </text>
+-                </box>
+-              </Match>
+-              <Match when={(current.type === "failed" || current.type === "check-failed") && current} keyed>
+-                {(failed) => (
+-                  <text fg={theme.error} wrapMode="word">
+-                    {failed.message}
+-                  </text>
+-                )}
+-              </Match>
+-            </Switch>
+-          )}
+-        </Show>
+-      </box>
+-      <Show when={buttons().length > 0}>
+-        <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
+-          <For each={buttons()}>
+-            {(button, index) => (
+-              <box
+-                paddingLeft={1}
+-                paddingRight={1}
+-                backgroundColor={active() === index() ? theme.primary : undefined}
+-                onMouseUp={() => void button.run()}
+-              >
+-                <text fg={active() === index() ? theme.selectedListItemText : theme.textMuted}>{button.label}</text>
+-              </box>
+-            )}
+-          </For>
+-        </box>
+-      </Show>
+-    </box>
+-  )
+-}
+diff --git a/packages/tui/src/context/update-notification.tsx b/packages/tui/src/context/update-notification.tsx
+deleted file mode 100644
+index 22f181a..0000000
+--- a/packages/tui/src/context/update-notification.tsx
++++ /dev/null
+@@ -1,132 +0,0 @@
+-import { createMemo, createSignal, onCleanup, onMount } from "solid-js"
+-import { createSimpleContext } from "./helper"
+-import { useKV } from "./kv"
+-import { useExit } from "./exit"
+-import { useDialog } from "../ui/dialog"
+-import { errorMessage } from "../util/error"
+-import { DialogUpdate } from "../component/dialog-update"
+-
+-export type UpdateTarget = { readonly type: "latest"; readonly version: string } | { readonly type: "major" }
+-
+-export type UpdateState =
+-  | { readonly type: "installing"; readonly target: UpdateTarget }
+-  | { readonly type: "installed"; readonly target: UpdateTarget }
+-  | { readonly type: "failed"; readonly target: UpdateTarget; readonly message: string }
+-
+-// A newer OpenCode 1 release wins; OpenCode 2.0 is only suggested once OpenCode 1 is up to date.
+-export type UpdateNotice = { readonly type: "available"; readonly version: string } | { readonly type: "major" }
+-
+-// Implemented by the CLI process so checks and installs run against this machine's installation.
+-export type UpdateSource = {
+-  readonly subscribe: (notify: (notice: UpdateNotice) => void) => () => void
+-  readonly check: () => Promise<{ readonly current: string; readonly latest?: string }>
+-  readonly apply: (target: UpdateTarget) => Promise<void>
+-}
+-
+-export const DISMISS_DURATION = 7 * 24 * 60 * 60 * 1000
+-
+-// Skipping an OpenCode 1 version hides it until a newer one ships; dismissing the OpenCode 2.0 offer hides it for a week.
+-export function visibleNotice(
+-  notice: UpdateNotice | undefined,
+-  hidden: { readonly skippedVersion?: string; readonly dismissedUntil?: number },
+-  now: number,
+-) {
+-  if (!notice) return undefined
+-  if (notice.type === "major")
+-    return hidden.dismissedUntil !== undefined && now < hidden.dismissedUntil ? undefined : notice
+-  if (hidden.skippedVersion && !isVersionGreater(notice.version, hidden.skippedVersion)) return undefined
+-  return notice
+-}
+-
+-export const MAJOR_INSTRUCTIONS = "https://opencode.ai/v2/docs"
+-
+-export const { use: useUpdateNotification, provider: UpdateNotificationProvider } = createSimpleContext({
+-  name: "UpdateNotification",
+-  init: (props: { updater?: UpdateSource }) => {
+-    const kv = useKV()
+-    const dialog = useDialog()
+-    const exit = useExit()
+-    const [available, setAvailable] = createSignal<UpdateNotice>()
+-    const [state, setState] = createSignal<UpdateState>()
+-    const [now, setNow] = createSignal(Date.now())
+-    const clock = setInterval(() => setNow(Date.now()), 10 * 60 * 1000)
+-    onCleanup(() => clearInterval(clock))
+-
+-    // Checks only announce a version. Installing always goes through /update.
+-    onMount(() => {
+-      if (!props.updater) return
+-      onCleanup(props.updater.subscribe(setAvailable))
+-    })
+-
+-    const notification = createMemo(() => {
+-      const current = state()
+-      if (current?.type === "installed") return current
+-      return visibleNotice(
+-        available(),
+-        { skippedVersion: kv.get("skipped_version"), dismissedUntil: kv.get("update_dismissed_until") },
+-        now(),
+-      )
+-    })
+-
+-    const install = async (target: UpdateTarget) => {
+-      const updater = props.updater
+-      if (!updater || state()?.type === "installing") return
+-      setState({ type: "installing", target })
+-      await updater.apply(target).then(
+-        () => setState({ type: "installed", target }),
+-        (error: unknown) => {
+-          const message = errorMessage(error)
+-          setState({
+-            type: "failed",
+-            target,
+-            message:
+-              target.type === "major" && !message.includes(MAJOR_INSTRUCTIONS)
+-                ? `${message}\nTo install OpenCode 2.0 manually, see ${MAJOR_INSTRUCTIONS}`
+-                : message,
+-          })
+-        },
+-      )
+-    }
+-
+-    const open = () => {
+-      const updater = props.updater
+-      if (!updater) return
+-      dialog.replace(() => (
+-        <DialogUpdate
+-          check={updater.check}
+-          state={state}
+-          install={install}
+-          skip={(version) => kv.set("skipped_version", version)}
+-          dismiss={() => {
+-            const at = Date.now()
+-            kv.set("update_dismissed_until", at + DISMISS_DURATION)
+-            setNow(at)
+-          }}
+-          restart={() => exit()}
+-        />
+-      ))
+-    }
+-
+-    return {
+-      notification,
+-      open: props.updater ? open : undefined,
+-    }
+-  },
+-})
+-
+-export function isVersionGreater(left: string, right: string) {
+-  const parse = (value: string) => {
+-    const [core, prerelease] = value.replace(/^v/, "").split("-", 2)
+-    return { core: core.split(".").map((part) => Number.parseInt(part, 10) || 0), prerelease }
+-  }
+-  const a = parse(left)
+-  const b = parse(right)
+-  for (let index = 0; index < Math.max(a.core.length, b.core.length); index++) {
+-    const difference = (a.core[index] ?? 0) - (b.core[index] ?? 0)
+-    if (difference) return difference > 0
+-  }
+-  if (a.prerelease === b.prerelease) return false
+-  if (!a.prerelease) return true
+-  if (!b.prerelease) return false
+-  return a.prerelease.localeCompare(b.prerelease, undefined, { numeric: true }) > 0
+-}
+diff --git a/packages/tui/src/index.tsx b/packages/tui/src/index.tsx
+index 1478094..722c2ba 100644
+--- a/packages/tui/src/index.tsx
++++ b/packages/tui/src/index.tsx
+@@ -1,2 +1 @@
+ export { run, type TuiInput } from "./app"
+-export type { UpdateNotice, UpdateSource } from "./context/update-notification"
+diff --git a/packages/tui/src/routes/home.tsx b/packages/tui/src/routes/home.tsx
+index 7b1bff0..84fd1e0 100644
+--- a/packages/tui/src/routes/home.tsx
++++ b/packages/tui/src/routes/home.tsx
+@@ -12,7 +12,6 @@ import { useEditorContext } from "../context/editor"
+ import { useTerminalDimensions } from "@opentui/solid"
+ import { useTuiConfig } from "../config"
+ import { HomeSessionDestinationProvider } from "./home/session-destination"
+-import { useUpdateNotification } from "../context/update-notification"
+ import { useTheme } from "../context/theme"
+ import { useExit } from "../context/exit"
+ 
+@@ -87,7 +86,6 @@ export function Home() {
+           </pluginRuntime.Slot>
+         </box>
+         <box height={1} minHeight={0} flexShrink={1} />
+-        <UpdateNotification width={logoWidth()} />
+         <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
+           <pluginRuntime.Slot name="home_prompt" mode="replace" ref={bind}>
+             <Prompt ref={bind} right={<pluginRuntime.Slot name="home_prompt_right" />} placeholders={placeholder} />
+@@ -104,46 +102,3 @@ export function Home() {
+   )
+ }
+ 
+-function UpdateNotification(props: { width: number }) {
+-  const update = useUpdateNotification()
+-  const exit = useExit()
+-  const { theme } = useTheme()
+-  const [hovered, setHovered] = createSignal(false)
+-  createEffect(() => {
+-    update.notification()
+-    setHovered(false)
+-  })
+-
+-  return (
+-    <Show when={update.notification()} keyed>
+-      {(state) => (
+-        <box
+-          flexShrink={0}
+-          flexDirection="row"
+-          justifyContent="center"
+-          width={props.width}
+-          maxWidth="100%"
+-          gap={1}
+-          backgroundColor={hovered() ? theme.backgroundElement : undefined}
+-          onMouseOver={() => setHovered(true)}
+-          onMouseOut={() => setHovered(false)}
+-          onMouseUp={() => {
+-            if (state.type === "installed") return exit()
+-            update.open?.()
+-          }}
+-        >
+-          <text fg={theme.textMuted}>
+-            <span style={{ fg: theme.primary }}>{state.type === "installed" ? "/exit" : "/update"}</span>
+-            {state.type === "available"
+-              ? ` to install v${state.version}`
+-              : state.type === "major"
+-                ? " to upgrade to OpenCode 2.0"
+-                : state.target.type === "major"
+-                  ? " restart to use OpenCode 2.0"
+-                  : ` restart to use v${state.target.version}`}
+-          </text>
+-        </box>
+-      )}
+-    </Show>
+-  )
+-}

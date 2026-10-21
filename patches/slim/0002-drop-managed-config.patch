@@ -1,0 +1,114 @@
+diff --git a/packages/opencode/src/config/config.ts b/packages/opencode/src/config/config.ts
+index 9e10b67..82d078f 100644
+--- a/packages/opencode/src/config/config.ts
++++ b/packages/opencode/src/config/config.ts
+@@ -28,7 +28,6 @@ import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
+ import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
+ import { ConfigAgent } from "./agent"
+ import { ConfigCommand } from "./command"
+-import { ConfigManaged } from "./managed"
+ import { ConfigParse } from "./parse"
+ import { ConfigPaths } from "./paths"
+ import { ConfigPlugin } from "./plugin"
+@@ -527,26 +526,6 @@ const layer = Layer.effect(
+           )
+         }
+ 
+-        const managedDir = ConfigManaged.managedConfigDir()
+-        if (existsSync(managedDir)) {
+-          for (const file of ["opencode.json", "opencode.jsonc"]) {
+-            const source = path.join(managedDir, file)
+-            yield* merge(source, yield* loadFile(source), "global")
+-          }
+-        }
+-
+-        // macOS managed preferences (.mobileconfig deployed via MDM) override everything
+-        const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
+-        if (managed) {
+-          result = mergeConfigConcatArrays(
+-            result,
+-            yield* loadConfig(managed.text, {
+-              dir: path.dirname(managed.source),
+-              source: managed.source,
+-            }),
+-          )
+-        }
+-
+         for (const [name, mode] of Object.entries(result.mode ?? {})) {
+           result.agent = mergeDeep(result.agent ?? {}, {
+             [name]: {
+diff --git a/packages/opencode/src/config/managed.ts b/packages/opencode/src/config/managed.ts
+deleted file mode 100644
+index 877d30a..0000000
+--- a/packages/opencode/src/config/managed.ts
++++ /dev/null
+@@ -1,69 +0,0 @@
+-export * as ConfigManaged from "./managed"
+-
+-import { existsSync } from "fs"
+-import os from "os"
+-import path from "path"
+-import { Process } from "@/util/process"
+-
+-const MANAGED_PLIST_DOMAIN = "ai.opencode.managed"
+-
+-// Keys injected by macOS/MDM into the managed plist that are not OpenCode config
+-const PLIST_META = new Set([
+-  "PayloadDisplayName",
+-  "PayloadIdentifier",
+-  "PayloadType",
+-  "PayloadUUID",
+-  "PayloadVersion",
+-  "_manualProfile",
+-])
+-
+-function systemManagedConfigDir(): string {
+-  switch (process.platform) {
+-    case "darwin":
+-      return "/Library/Application Support/opencode"
+-    case "win32":
+-      return path.join(process.env.ProgramData || "C:\\ProgramData", "opencode")
+-    default:
+-      return "/etc/opencode"
+-  }
+-}
+-
+-export function managedConfigDir() {
+-  return process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR || systemManagedConfigDir()
+-}
+-
+-export function parseManagedPlist(json: string): string {
+-  const raw = JSON.parse(json)
+-  for (const key of Object.keys(raw)) {
+-    if (PLIST_META.has(key)) delete raw[key]
+-  }
+-  return JSON.stringify(raw)
+-}
+-
+-export async function readManagedPreferences() {
+-  if (process.platform !== "darwin") return
+-
+-  const user = (() => {
+-    try {
+-      return os.userInfo().username || "user"
+-    } catch {
+-      return "user"
+-    }
+-  })()
+-  const paths = [
+-    path.join("/Library/Managed Preferences", user, `${MANAGED_PLIST_DOMAIN}.plist`),
+-    path.join("/Library/Managed Preferences", `${MANAGED_PLIST_DOMAIN}.plist`),
+-  ]
+-
+-  for (const plist of paths) {
+-    if (!existsSync(plist)) continue
+-    const result = await Process.run(["plutil", "-convert", "json", "-o", "-", plist], { nothrow: true })
+-    if (result.code !== 0) continue
+-    return {
+-      source: `mobileconfig:${plist}`,
+-      text: parseManagedPlist(result.stdout.toString()),
+-    }
+-  }
+-
+-  return
+-}

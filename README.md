@@ -143,7 +143,10 @@ and `/update` dialog), macOS managed preferences, Windows/macOS/WSL code paths i
 the shell tool, LSP downloads, clipboard, terminal guards and path handling, and
 the `open` dependency. Non-Termux binaries and asset names are gone, so a slim
 build cannot fall back to another platform. It builds a single `aarch64` `.deb`
-and ships no portable tarball.
+and ships no portable tarball. The patch series is split one context per file
+(`0001` self-update, `0002` managed config, `0003` shell tool, `0004` LSP, `0005`
+core runtime, `0006` opencode runtime, `0007` TUI, `0008` `open` dependency), so a
+single change can be reviewed or reverted on its own.
 
 ## Limitations
 

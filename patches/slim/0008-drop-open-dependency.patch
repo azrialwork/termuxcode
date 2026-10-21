@@ -1,0 +1,46 @@
+diff --git a/bun.lock b/bun.lock
+index 1d832f5..2889bea 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -352,7 +352,6 @@
+         "mime-types": "3.0.2",
+         "minimatch": "10.2.5",
+         "npm-package-arg": "13.0.2",
+-        "open": "11.0.4",
+         "semver": "^7.6.3",
+         "turndown": "7.2.0",
+         "venice-ai-sdk-provider": "2.1.1",
+@@ -1083,7 +1082,6 @@
+     "@opentui/solid": "catalog:",
+     "@types/bun": "catalog:",
+     "@types/node": "catalog:",
+-    "open": "11.0.4",
+   },
+   "catalog": {
+     "@cloudflare/workers-types": "4.20251008.0",
+diff --git a/package.json b/package.json
+index 003e39a..0a2b8c9 100644
+--- a/package.json
++++ b/package.json
+@@ -142,8 +142,7 @@
+     "@opentui/keymap": "catalog:",
+     "@opentui/solid": "catalog:",
+     "@types/bun": "catalog:",
+-    "@types/node": "catalog:",
+-    "open": "11.0.4"
++    "@types/node": "catalog:"
+   },
+   "patchedDependencies": {
+     "@dnd-kit/dom@0.5.0": "patches/@dnd-kit%2Fdom@0.5.0.patch",
+diff --git a/packages/core/package.json b/packages/core/package.json
+index e259c61..73efc04 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -119,7 +119,6 @@
+     "mime-types": "3.0.2",
+     "minimatch": "10.2.5",
+     "npm-package-arg": "13.0.2",
+-    "open": "11.0.4",
+     "semver": "^7.6.3",
+     "turndown": "7.2.0",
+     "venice-ai-sdk-provider": "2.1.1",

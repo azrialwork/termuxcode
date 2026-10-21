@@ -1,0 +1,586 @@
+diff --git a/packages/opencode/src/cli/cmd/tui.ts b/packages/opencode/src/cli/cmd/tui.ts
+index 9584ba2..1dd9417 100644
+--- a/packages/opencode/src/cli/cmd/tui.ts
++++ b/packages/opencode/src/cli/cmd/tui.ts
+@@ -13,7 +13,6 @@ import type { EventSource } from "@opencode-ai/tui/context/sdk"
+ import { writeHeapSnapshot } from "v8"
+ import { ServerAuth } from "@/server/auth"
+ import { validateSession } from "../tui/validate-session"
+-import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+ 
+ declare global {
+   const OPENCODE_WORKER_PATH: string
+@@ -186,7 +185,6 @@ export const TuiThreadCommand = cmd({
+       return
+     }
+ 
+-    const unguard = win32InstallCtrlCGuard()
+     try {
+       const { TuiConfig } = await import("@/config/tui")
+       if (args.fork && !args.continue && !args.session) {
+diff --git a/packages/tui/package.json b/packages/tui/package.json
+index b90767c..f244e7e 100644
+--- a/packages/tui/package.json
++++ b/packages/tui/package.json
+@@ -28,7 +28,6 @@
+     "./editor": "./src/editor.ts",
+     "./editor-zed": "./src/editor-zed.ts",
+     "./runtime": "./src/runtime.tsx",
+-    "./terminal-win32": "./src/terminal-win32.ts",
+     "./config/keybind": "./src/config/keybind.ts",
+     "./keymap": "./src/keymap.tsx",
+     "./prompt/display": "./src/prompt/display.ts",
+diff --git a/packages/tui/src/app.tsx b/packages/tui/src/app.tsx
+index 25b2cc4..d1bcced 100644
+--- a/packages/tui/src/app.tsx
++++ b/packages/tui/src/app.tsx
+@@ -24,7 +24,7 @@ import {
+   Show,
+   on,
+ } from "solid-js"
+-import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
++import { TuiPathsProvider, TuiStartupProvider, useTuiStartup } from "./context/runtime"
+ import { DialogProvider, useDialog } from "./ui/dialog"
+ import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
+ import { ErrorComponent } from "./component/error-component"
+@@ -81,7 +81,6 @@ import type { EventSource } from "./context/sdk"
+ import { DialogVariant } from "./component/dialog-variant"
+ import { createTuiAttention } from "./attention"
+ import * as TuiAudio from "./audio"
+-import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
+ import { destroyRenderer } from "./util/renderer"
+ import { cliErrorMessage, errorFormat } from "./util/error"
+ 
+@@ -192,7 +191,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+             destroyRenderer(renderer)
+           }),
+       )
+-      win32DisableProcessedInput()
+       const keymap = createDefaultOpenTuiKeymap(renderer)
+       yield* Effect.acquireRelease(
+         Effect.sync(() => registerOpencodeKeymap(keymap, renderer, input.config)),
+@@ -242,17 +240,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+                       worktree: global.data + "/worktree",
+                     }}
+                   >
+-                    <TuiTerminalEnvironmentProvider
+-                      value={{
+-                        platform: process.platform,
+-                        multiplexer: process.env.TMUX ? "tmux" : process.env.STY ? "screen" : undefined,
+-                        displayServer: process.env.WAYLAND_DISPLAY
+-                          ? "wayland"
+-                          : process.env.DISPLAY
+-                            ? "x11"
+-                            : undefined,
+-                      }}
+-                    >
+                       <TuiStartupProvider
+                         value={{
+                           initialRoute: process.env.OPENCODE_ROUTE ? JSON.parse(process.env.OPENCODE_ROUTE) : undefined,
+@@ -323,7 +310,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+                           </OpencodeKeymapProvider>
+                         </ClipboardProvider>
+                       </TuiStartupProvider>
+-                    </TuiTerminalEnvironmentProvider>
+                   </TuiPathsProvider>
+                 </ErrorBoundary>
+               </EpilogueProvider>
+@@ -336,7 +322,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+     }),
+   )
+   yield* Effect.sync(() => {
+-    win32FlushInputBuffer()
+     if (result.reason !== undefined) {
+       process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
+       process.exitCode = 1
+@@ -852,7 +837,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
+         title: "Suspend terminal",
+         category: "System",
+         hidden: true,
+-        enabled: process.platform !== "win32",
++        enabled: true,
+         run: () => {
+           renderer.suspend()
+           process.once("SIGCONT", () => renderer.resume())
+diff --git a/packages/tui/src/clipboard.ts b/packages/tui/src/clipboard.ts
+index 2ae29da..caf606c 100644
+--- a/packages/tui/src/clipboard.ts
++++ b/packages/tui/src/clipboard.ts
+@@ -1,10 +1,4 @@
+-import { execFile, spawn } from "node:child_process"
+-import { readFile, rm } from "node:fs/promises"
+-import { platform, release, tmpdir } from "node:os"
+-import path from "node:path"
+-import { promisify } from "node:util"
+-
+-const exec = promisify(execFile)
++import { spawn } from "node:child_process"
+ 
+ function command(command: string, args: string[] = [], input?: string) {
+   return new Promise<Buffer>((resolve, reject) => {
+@@ -28,70 +22,12 @@ function writeOsc52(text: string) {
+ }
+ 
+ export async function read() {
+-  if (platform() === "darwin") {
+-    const file = path.join(tmpdir(), "opencode-clipboard.png")
+-    try {
+-      await exec("osascript", [
+-        "-e",
+-        'set imageData to the clipboard as "PNGf"',
+-        "-e",
+-        `set fileRef to open for access POSIX file "${file}" with write permission`,
+-        "-e",
+-        "set eof fileRef to 0",
+-        "-e",
+-        "write imageData to fileRef",
+-        "-e",
+-        "close access fileRef",
+-      ])
+-      return { data: (await readFile(file)).toString("base64"), mime: "image/png" }
+-    } catch {
+-      // Fall through to text clipboard.
+-    } finally {
+-      await rm(file, { force: true }).catch(() => {})
+-    }
+-  }
+-
+-  if (platform() === "win32" || release().includes("WSL")) {
+-    const script =
+-      "Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [System.Convert]::ToBase64String($ms.ToArray()) }"
+-    const image = await command("powershell.exe", ["-NonInteractive", "-NoProfile", "-command", script]).catch(() =>
+-      Buffer.alloc(0),
+-    )
+-    if (image.length) return { data: image.toString().trim(), mime: "image/png" }
+-  }
+-
+-  if (platform() === "linux") {
+-    const wayland = await command("wl-paste", ["-t", "image/png"]).catch(() => Buffer.alloc(0))
+-    if (wayland.length) return { data: wayland.toString("base64"), mime: "image/png" }
+-    const x11 = await command("xclip", ["-selection", "clipboard", "-t", "image/png", "-o"]).catch(() =>
+-      Buffer.alloc(0),
+-    )
+-    if (x11.length) return { data: x11.toString("base64"), mime: "image/png" }
+-  }
+-
+-  const { default: clipboardy } = await import("clipboardy")
+-  const text = await clipboardy.read().catch(() => undefined)
+-  if (text) return { data: text, mime: "text/plain" }
++  const text = await command("termux-clipboard-get").catch(() => Buffer.alloc(0))
++  if (text.length) return { data: text.toString(), mime: "text/plain" }
+ }
+ 
+-export function copyCommand(
+-  os: NodeJS.Platform,
+-  wayland: boolean,
+-  has: (name: string) => boolean,
+-): string[] | undefined {
+-  if (os === "darwin" && has("osascript")) return ["osascript"]
+-  if (os === "linux" && wayland && has("wl-copy")) return ["wl-copy"]
+-  if (os === "linux" && has("xclip")) return ["xclip", "-selection", "clipboard"]
+-  if (os === "linux" && has("xsel")) return ["xsel", "--clipboard", "--input"]
+-  if (os === "win32" && has("powershell.exe")) {
+-    return [
+-      "powershell.exe",
+-      "-NonInteractive",
+-      "-NoProfile",
+-      "-Command",
+-      "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+-    ]
+-  }
++export function copyCommand(has: (name: string) => boolean): string[] | undefined {
++  if (has("termux-clipboard-set")) return ["termux-clipboard-set"]
+ }
+ 
+ let copyMethod: Promise<(text: string) => Promise<void>> | undefined
+@@ -99,22 +35,13 @@ let copyMethod: Promise<(text: string) => Promise<void>> | undefined
+ function getCopyMethod() {
+   return (copyMethod ??= (async () => {
+     const { which } = await import("@opencode-ai/core/util/which")
+-    const native = copyCommand(platform(), Boolean(process.env.WAYLAND_DISPLAY), (name) => Boolean(which(name)))
+-    if (native?.[0] === "osascript") {
+-      return async (text: string) => {
+-        const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+-        await command("osascript", ["-e", `set the clipboard to "${escaped}"`]).catch(() => undefined)
+-      }
+-    }
++    const native = copyCommand((name) => Boolean(which(name)))
+     if (native) {
+       return async (text: string) => {
+         await command(native[0], native.slice(1), text).catch(() => undefined)
+       }
+     }
+-    return async (text: string) => {
+-      const { default: clipboardy } = await import("clipboardy")
+-      await clipboardy.write(text).catch(() => undefined)
+-    }
++    return async () => undefined
+   })())
+ }
+ 
+diff --git a/packages/tui/src/component/prompt/index.tsx b/packages/tui/src/component/prompt/index.tsx
+index c48c751..886bff9 100644
+--- a/packages/tui/src/component/prompt/index.tsx
++++ b/packages/tui/src/component/prompt/index.tsx
+@@ -17,7 +17,7 @@ import { useLocal } from "../../context/local"
+ import { Flag } from "@opencode-ai/core/flag/flag"
+ import { tint, useTheme } from "../../context/theme"
+ import { EmptyBorder, SplitBorder } from "../../ui/border"
+-import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
++import { useTuiPaths } from "../../context/runtime"
+ import { useClipboard } from "../../context/clipboard"
+ import { Spinner } from "../spinner"
+ import { useSDK } from "../../context/sdk"
+@@ -75,14 +75,13 @@ export type PromptProps = {
+   }
+ }
+ 
+-function pastedFilepath(value: string, platform: string) {
++function pastedFilepath(value: string) {
+   const raw = value.replace(/^['"]+|['"]+$/g, "")
+   if (raw.startsWith("file://")) {
+     try {
+       return fileURLToPath(raw)
+     } catch {}
+   }
+-  if (platform === "win32") return raw
+   return raw.replace(/\\(.)/g, "$1")
+ }
+ 
+@@ -150,7 +149,6 @@ export function Prompt(props: PromptProps) {
+   const args = useArgs()
+   const paths = useTuiPaths()
+   const location = useLocation()
+-  const terminalEnvironment = useTuiTerminalEnvironment()
+   const clipboard = useClipboard()
+   const sdk = useSDK()
+   const editor = useEditorContext()
+@@ -1183,7 +1181,7 @@ export function Prompt(props: PromptProps) {
+   async function pasteInputText(text: string) {
+     const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+     const pastedContent = normalizedText.trim()
+-    const filepath = pastedFilepath(pastedContent, terminalEnvironment.platform)
++    const filepath = pastedFilepath(pastedContent)
+     const isUrl = /^(https?):\/\//.test(filepath)
+     if (!isUrl) {
+       const attachment = await readLocalAttachment(filepath)
+@@ -1399,14 +1397,12 @@ export function Prompt(props: PromptProps) {
+                   return
+                 }
+ 
+-                // Normalize line endings at the boundary
+-                // Windows ConPTY/Terminal often sends CR-only newlines in bracketed paste
+-                // Replace CRLF first, then any remaining CR
++                // Normalize line endings at the boundary; some terminals send
++                // CR-only newlines in bracketed paste. Replace CRLF first.
+                 const normalizedText = decodePasteBytes(event.bytes).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+                 const pastedContent = normalizedText.trim()
+ 
+-                // Windows Terminal <1.25 can surface image-only clipboard as an
+-                // empty bracketed paste. Windows Terminal 1.25+ does not.
++                // An image-only clipboard can surface as an empty bracketed paste.
+                 if (!pastedContent) {
+                   keymap.dispatchCommand("prompt.paste")
+                   return
+diff --git a/packages/tui/src/context/runtime.tsx b/packages/tui/src/context/runtime.tsx
+index 281049f..827e2a6 100644
+--- a/packages/tui/src/context/runtime.tsx
++++ b/packages/tui/src/context/runtime.tsx
+@@ -7,19 +7,12 @@ export type TuiPaths = Readonly<{
+   worktree: string
+ }>
+ 
+-export type TuiTerminalEnvironment = Readonly<{
+-  platform: string
+-  multiplexer?: "tmux" | "screen"
+-  displayServer?: "wayland" | "x11"
+-}>
+-
+ export type TuiStartup = Readonly<{
+   initialRoute?: unknown
+   skipInitialLoading: boolean
+ }>
+ 
+ const PathsContext = createContext<TuiPaths>()
+-const TerminalEnvironmentContext = createContext<TuiTerminalEnvironment>()
+ const StartupContext = createContext<TuiStartup>()
+ 
+ function provider<T>(context: ReturnType<typeof createContext<T>>, value: T, children: () => JSX.Element) {
+@@ -35,10 +28,6 @@ export function TuiPathsProvider(props: { value: TuiPaths; children: JSX.Element
+   return provider(PathsContext, props.value, () => props.children)
+ }
+ 
+-export function TuiTerminalEnvironmentProvider(props: { value: TuiTerminalEnvironment; children: JSX.Element }) {
+-  return provider(TerminalEnvironmentContext, props.value, () => props.children)
+-}
+-
+ export function TuiStartupProvider(props: { value: TuiStartup; children: JSX.Element }) {
+   return provider(StartupContext, props.value, () => props.children)
+ }
+@@ -53,10 +42,6 @@ export function useTuiPaths() {
+   return required(PathsContext, "TuiPathsProvider")
+ }
+ 
+-export function useTuiTerminalEnvironment() {
+-  return required(TerminalEnvironmentContext, "TuiTerminalEnvironmentProvider")
+-}
+-
+ export function useTuiStartup() {
+   return required(StartupContext, "TuiStartupProvider")
+ }
+diff --git a/packages/tui/src/editor.ts b/packages/tui/src/editor.ts
+index 68afba6..e0aabd9 100644
+--- a/packages/tui/src/editor.ts
++++ b/packages/tui/src/editor.ts
+@@ -36,7 +36,7 @@ export async function openEditor(input: { value: string; renderer: CliRenderer;
+       const child = spawn(parts[0]!, [...parts.slice(1), file], {
+         cwd: input.cwd && existsSync(input.cwd) ? input.cwd : process.cwd(),
+         stdio: [input.stdin ?? "inherit", "inherit", "inherit"],
+-        shell: process.platform === "win32",
++        shell: false,
+       })
+       child.on("error", reject)
+       child.on("exit", (code, signal) => {
+diff --git a/packages/tui/src/feature-plugins/home/tips-view.tsx b/packages/tui/src/feature-plugins/home/tips-view.tsx
+index c7ef5c8..c678968 100644
+--- a/packages/tui/src/feature-plugins/home/tips-view.tsx
++++ b/packages/tui/src/feature-plugins/home/tips-view.tsx
+@@ -134,7 +134,7 @@ export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
+   }
+   const tip = createMemo(() => {
+     if (props.connected === false) return NO_MODELS_TIP
+-    const tips = [...TIPS, process.platform !== "win32" ? TERMINAL_SUSPEND_TIP : INPUT_UNDO_TIP].flatMap((item) => {
++    const tips = [...TIPS, TERMINAL_SUSPEND_TIP].flatMap((item) => {
+       const value = typeof item === "string" ? item : item(shortcuts)
+       return value ? [value] : []
+     })
+@@ -278,6 +278,5 @@ const TIPS: Tip[] = [
+   "Use {highlight}/rename{/highlight} to rename the current session",
+ ]
+ 
+-const INPUT_UNDO_TIP: Tip = (shortcuts) => press(shortcuts.inputUndo(), "to undo changes in your prompt")
+ const TERMINAL_SUSPEND_TIP: Tip = (shortcuts) =>
+   press(shortcuts.terminalSuspend(), "to suspend the terminal and return to your shell")
+diff --git a/packages/tui/src/routes/session/index.tsx b/packages/tui/src/routes/session/index.tsx
+index e1f554f..fbf5b54 100644
+--- a/packages/tui/src/routes/session/index.tsx
++++ b/packages/tui/src/routes/session/index.tsx
+@@ -21,7 +21,7 @@ import { useProject } from "../../context/project"
+ import { useSync } from "../../context/sync"
+ import { useEvent } from "../../context/event"
+ import { SplitBorder } from "../../ui/border"
+-import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
++import { useTuiPaths } from "../../context/runtime"
+ import { Spinner } from "../../component/spinner"
+ import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
+ import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
+@@ -62,7 +62,6 @@ import { useKV } from "../../context/kv.tsx"
+ import stripAnsi from "strip-ansi"
+ import { usePromptRef } from "../../context/prompt"
+ import { useEpilogue } from "../../context/epilogue"
+-import { normalizePath } from "../../util/path"
+ import { PermissionPrompt } from "./permission"
+ import { QuestionPrompt } from "./question"
+ import { DialogExportOptions } from "../../ui/dialog-export-options"
+@@ -2517,12 +2516,8 @@ function Skill(props: ToolProps) {
+ 
+ function Diagnostics(props: { diagnostics: unknown; filePath: string }) {
+   const { theme } = useTheme()
+-  const terminalEnvironment = useTuiTerminalEnvironment()
+   const errors = createMemo(() => {
+-    const normalized = normalizePath(
+-      typeof props.filePath === "string" ? props.filePath : "",
+-      terminalEnvironment.platform,
+-    )
++    const normalized = typeof props.filePath === "string" ? props.filePath : ""
+     return parseDiagnostics(props.diagnostics, normalized)
+   })
+ 
+diff --git a/packages/tui/src/terminal-win32.ts b/packages/tui/src/terminal-win32.ts
+deleted file mode 100644
+index 1aaa80a..0000000
+--- a/packages/tui/src/terminal-win32.ts
++++ /dev/null
+@@ -1,130 +0,0 @@
+-import { dlopen, ptr } from "bun:ffi"
+-import type { ReadStream } from "node:tty"
+-
+-const STD_INPUT_HANDLE = -10
+-const ENABLE_PROCESSED_INPUT = 0x0001
+-
+-const kernel = () =>
+-  dlopen("kernel32.dll", {
+-    GetStdHandle: { args: ["i32"], returns: "ptr" },
+-    GetConsoleMode: { args: ["ptr", "ptr"], returns: "i32" },
+-    SetConsoleMode: { args: ["ptr", "u32"], returns: "i32" },
+-    FlushConsoleInputBuffer: { args: ["ptr"], returns: "i32" },
+-  })
+-
+-let k32: ReturnType<typeof kernel> | undefined
+-
+-function load() {
+-  if (process.platform !== "win32") return false
+-  try {
+-    k32 ??= kernel()
+-    return true
+-  } catch {
+-    return false
+-  }
+-}
+-
+-/**
+- * Clear ENABLE_PROCESSED_INPUT on the console stdin handle.
+- */
+-export function win32DisableProcessedInput() {
+-  if (process.platform !== "win32") return
+-  if (!process.stdin.isTTY) return
+-  if (!load()) return
+-
+-  const handle = k32!.symbols.GetStdHandle(STD_INPUT_HANDLE)
+-  const buf = new Uint32Array(1)
+-  if (k32!.symbols.GetConsoleMode(handle, ptr(buf)) === 0) return
+-
+-  const mode = buf[0]!
+-  if ((mode & ENABLE_PROCESSED_INPUT) === 0) return
+-  k32!.symbols.SetConsoleMode(handle, mode & ~ENABLE_PROCESSED_INPUT)
+-}
+-
+-/**
+- * Discard any queued console input (mouse events, key presses, etc.).
+- */
+-export function win32FlushInputBuffer() {
+-  if (process.platform !== "win32") return
+-  if (!process.stdin.isTTY) return
+-  if (!load()) return
+-
+-  const handle = k32!.symbols.GetStdHandle(STD_INPUT_HANDLE)
+-  k32!.symbols.FlushConsoleInputBuffer(handle)
+-}
+-
+-let unhook: (() => void) | undefined
+-
+-/**
+- * Keep ENABLE_PROCESSED_INPUT disabled.
+- *
+- * On Windows, Ctrl+C becomes a CTRL_C_EVENT (instead of stdin input) when
+- * ENABLE_PROCESSED_INPUT is set. Various runtimes can re-apply console modes
+- * (sometimes on a later tick), and the flag is console-global, not per-process.
+- *
+- * We combine:
+- * - A `setRawMode(...)` hook to re-clear after known raw-mode toggles.
+- * - A low-frequency poll as a backstop for native/external mode changes.
+- */
+-export function win32InstallCtrlCGuard() {
+-  if (process.platform !== "win32") return
+-  if (!process.stdin.isTTY) return
+-  if (!load()) return
+-  if (unhook) return unhook
+-
+-  const stdin = process.stdin as ReadStream
+-  const original = stdin.setRawMode
+-
+-  const handle = k32!.symbols.GetStdHandle(STD_INPUT_HANDLE)
+-  const buf = new Uint32Array(1)
+-
+-  if (k32!.symbols.GetConsoleMode(handle, ptr(buf)) === 0) return
+-  const initial = buf[0]!
+-
+-  const enforce = () => {
+-    if (k32!.symbols.GetConsoleMode(handle, ptr(buf)) === 0) return
+-    const mode = buf[0]!
+-    if ((mode & ENABLE_PROCESSED_INPUT) === 0) return
+-    k32!.symbols.SetConsoleMode(handle, mode & ~ENABLE_PROCESSED_INPUT)
+-  }
+-
+-  // Some runtimes can re-apply console modes on the next tick; enforce twice.
+-  const later = () => {
+-    enforce()
+-    setImmediate(enforce)
+-  }
+-
+-  let wrapped: ReadStream["setRawMode"] | undefined
+-
+-  if (typeof original === "function") {
+-    wrapped = (mode: boolean) => {
+-      const result = original.call(stdin, mode)
+-      later()
+-      return result
+-    }
+-
+-    stdin.setRawMode = wrapped
+-  }
+-
+-  // Ensure it's cleared immediately too (covers any earlier mode changes).
+-  later()
+-
+-  const interval = setInterval(enforce, 100)
+-  interval.unref()
+-
+-  let done = false
+-  unhook = () => {
+-    if (done) return
+-    done = true
+-
+-    clearInterval(interval)
+-    if (wrapped && stdin.setRawMode === wrapped) {
+-      stdin.setRawMode = original
+-    }
+-
+-    k32!.symbols.SetConsoleMode(handle, initial)
+-    unhook = undefined
+-  }
+-
+-  return unhook
+-}
+diff --git a/packages/tui/src/util/filetype.ts b/packages/tui/src/util/filetype.ts
+index 16a89bc..f0fc15c 100644
+--- a/packages/tui/src/util/filetype.ts
++++ b/packages/tui/src/util/filetype.ts
+@@ -72,8 +72,6 @@ export const LANGUAGE_EXTENSIONS: Record<string, string> = {
+   ".pm": "perl",
+   ".pm6": "perl6",
+   ".php": "php",
+-  ".ps1": "powershell",
+-  ".psm1": "powershell",
+   ".pug": "jade",
+   ".jade": "jade",
+   ".py": "python",
+diff --git a/packages/tui/src/util/path.ts b/packages/tui/src/util/path.ts
+deleted file mode 100644
+index 7b30c2e..0000000
+--- a/packages/tui/src/util/path.ts
++++ /dev/null
+@@ -1,12 +0,0 @@
+-import { realpathSync } from "node:fs"
+-import { win32 } from "node:path"
+-
+-export function normalizePath(input: string, platform: string) {
+-  if (platform !== "win32") return input
+-  const resolved = win32.normalize(win32.resolve(input.replaceAll("/", "\\")))
+-  try {
+-    return realpathSync.native(resolved)
+-  } catch {
+-    return resolved
+-  }
+-}
+diff --git a/packages/tui/src/util/system.ts b/packages/tui/src/util/system.ts
+index f55848b..9e59cfd 100644
+--- a/packages/tui/src/util/system.ts
++++ b/packages/tui/src/util/system.ts
+@@ -1,15 +1,7 @@
+ import { release } from "node:os"
+ 
+ export function describeOS() {
+-  const name =
+-    process.platform === "darwin"
+-      ? "macOS"
+-      : process.platform === "win32"
+-        ? "Windows"
+-        : process.platform === "linux"
+-          ? "Linux"
+-          : process.platform
+-  return `${name} ${release()} (${process.arch})`
++  return `Android ${release()} (${process.arch})`
+ }
+ 
+ export function describeTerminal() {
