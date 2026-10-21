@@ -29,7 +29,7 @@ case "$version" in
 esac
 
 # nohup keeps the server alive after the adb shell session ends.
-adb shell "nohup $env_prefix $bin_dir/opencode serve --port 4096 --print-logs >$home_dir/serve.log 2>&1 &" >/dev/null
+adb shell "nohup env $env_prefix $bin_dir/opencode serve --port 4096 --print-logs >$home_dir/serve.log 2>&1 &" >/dev/null
 adb forward tcp:4096 tcp:4096
 
 listening=0
