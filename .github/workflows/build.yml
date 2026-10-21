@@ -51,6 +51,9 @@ jobs:
           ref: ${{ env.OPENTUI_TAG }}
           path: opentui
 
+      - name: Patch opentui for Android
+        run: git -C opentui apply "$GITHUB_WORKSPACE/self/patches/opentui-build-zig-android.patch"
+
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
