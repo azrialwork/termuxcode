@@ -9455,200 +9455,6 @@ index 6f05329..88de0ac 100644
            const init = yield* Effect.tryPromise({
              try: () => plugin(input),
              catch: errorMessage,
-diff --git a/packages/opencode/src/plugin/meta.ts b/packages/opencode/src/plugin/meta.ts
-deleted file mode 100644
-index 54f784d..0000000
---- a/packages/opencode/src/plugin/meta.ts
-+++ /dev/null
-@@ -1,188 +0,0 @@
--import path from "path"
--import { fileURLToPath } from "url"
--
--import { Flag } from "@opencode-ai/core/flag/flag"
--import { Global } from "@opencode-ai/core/global"
--import { Filesystem } from "@/util/filesystem"
--import { Flock } from "@opencode-ai/core/util/flock"
--
--import { parsePluginSpecifier, pluginSource } from "./shared"
--
--type Source = "file" | "npm"
--
--export type Theme = {
--  src: string
--  dest: string
--  mtime?: number
--  size?: number
--}
--
--export type Entry = {
--  id: string
--  source: Source
--  spec: string
--  target: string
--  requested?: string
--  version?: string
--  modified?: number
--  first_time: number
--  last_time: number
--  time_changed: number
--  load_count: number
--  fingerprint: string
--  themes?: Record<string, Theme>
--}
--
--export type State = "first" | "updated" | "same"
--
--export type Touch = {
--  spec: string
--  target: string
--  id: string
--}
--
--type Store = Record<string, Entry>
--type Core = Omit<Entry, "first_time" | "last_time" | "time_changed" | "load_count" | "fingerprint" | "themes">
--type Row = Touch & { core: Core }
--
--function storePath() {
--  return Flag.OPENCODE_PLUGIN_META_FILE ?? path.join(Global.Path.state, "plugin-meta.json")
--}
--
--function lock(file: string) {
--  return `plugin-meta:${file}`
--}
--
--function fileTarget(spec: string, target: string) {
--  if (spec.startsWith("file://")) return fileURLToPath(spec)
--  if (target.startsWith("file://")) return fileURLToPath(target)
--  return
--}
--
--async function modifiedAt(file: string) {
--  const stat = await Filesystem.statAsync(file)
--  if (!stat) return
--  const mtime = stat.mtimeMs
--  return Math.floor(typeof mtime === "bigint" ? Number(mtime) : mtime)
--}
--
--function resolvedTarget(target: string) {
--  if (target.startsWith("file://")) return fileURLToPath(target)
--  return target
--}
--
--async function npmVersion(target: string) {
--  const resolved = resolvedTarget(target)
--  const stat = await Filesystem.statAsync(resolved)
--  const dir = stat?.isDirectory() ? resolved : path.dirname(resolved)
--  return Filesystem.readJson<{ version?: string }>(path.join(dir, "package.json"))
--    .then((item) => item.version)
--    .catch(() => undefined)
--}
--
--async function entryCore(item: Touch): Promise<Core> {
--  const spec = item.spec
--  const target = item.target
--  const source = pluginSource(spec)
--  if (source === "file") {
--    const file = fileTarget(spec, target)
--    return {
--      id: item.id,
--      source,
--      spec,
--      target,
--      modified: file ? await modifiedAt(file) : undefined,
--    }
--  }
--
--  return {
--    id: item.id,
--    source,
--    spec,
--    target,
--    requested: parsePluginSpecifier(spec).version,
--    version: await npmVersion(target),
--  }
--}
--
--function fingerprint(value: Core) {
--  if (value.source === "file") return [value.target, value.modified ?? ""].join("|")
--  return [value.target, value.requested ?? "", value.version ?? ""].join("|")
--}
--
--async function read(file: string): Promise<Store> {
--  return Filesystem.readJson<Store>(file).catch(() => ({}) as Store)
--}
--
--async function row(item: Touch): Promise<Row> {
--  return {
--    ...item,
--    core: await entryCore(item),
--  }
--}
--
--function next(prev: Entry | undefined, core: Core, now: number): { state: State; entry: Entry } {
--  const entry: Entry = {
--    ...core,
--    first_time: prev?.first_time ?? now,
--    last_time: now,
--    time_changed: prev?.time_changed ?? now,
--    load_count: (prev?.load_count ?? 0) + 1,
--    fingerprint: fingerprint(core),
--    themes: prev?.themes,
--  }
--  const state: State = !prev ? "first" : prev.fingerprint === entry.fingerprint ? "same" : "updated"
--  if (state === "updated") entry.time_changed = now
--  return {
--    state,
--    entry,
--  }
--}
--
--export async function touchMany(items: Touch[]): Promise<Array<{ state: State; entry: Entry }>> {
--  if (!items.length) return []
--  const file = storePath()
--  const rows = await Promise.all(items.map((item) => row(item)))
--
--  return Flock.withLock(lock(file), async () => {
--    const store = await read(file)
--    const now = Date.now()
--    const out: Array<{ state: State; entry: Entry }> = []
--    for (const item of rows) {
--      const hit = next(store[item.id], item.core, now)
--      store[item.id] = hit.entry
--      out.push(hit)
--    }
--    await Filesystem.writeJson(file, store)
--    return out
--  })
--}
--
--export async function touch(spec: string, target: string, id: string): Promise<{ state: State; entry: Entry }> {
--  return touchMany([{ spec, target, id }]).then((item) => {
--    const hit = item[0]
--    if (hit) return hit
--    throw new Error("Failed to touch plugin metadata.")
--  })
--}
--
--export async function setTheme(id: string, name: string, theme: Theme): Promise<void> {
--  const file = storePath()
--  await Flock.withLock(lock(file), async () => {
--    const store = await read(file)
--    const entry = store[id]
--    if (!entry) return
--    entry.themes = {
--      ...entry.themes,
--      [name]: theme,
--    }
--    await Filesystem.writeJson(file, store)
--  })
--}
--
--export async function list(): Promise<Store> {
--  const file = storePath()
--  return Flock.withLock(lock(file), async () => read(file))
--}
--
--export * as PluginMeta from "./meta"
 diff --git a/packages/opencode/src/plugin/modal/modal.ts b/packages/opencode/src/plugin/modal/modal.ts
 deleted file mode 100644
 index 942166e..0000000
@@ -13092,6 +12898,135 @@ index 459706a..d3c2bea 100644
          if (candidates[0]) return candidates[0]
        }
  
+diff --git a/packages/opencode/src/session/llm.ts b/packages/opencode/src/session/llm.ts
+index a99f8ac..23dd5a9 100644
+--- a/packages/opencode/src/session/llm.ts
++++ b/packages/opencode/src/session/llm.ts
+@@ -10,7 +10,6 @@ import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
+ import type { LLMEvent } from "@opencode-ai/llm"
+ import { LLMClient } from "@opencode-ai/llm/route"
+ import type { LLMClientService } from "@opencode-ai/llm/route"
+-import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
+ import { ProviderTransform } from "@/provider/transform"
+ import { Config } from "@/config/config"
+ import type { Agent } from "@/agent/agent"
+@@ -102,108 +101,15 @@ const live: Layer.Layer<
+         { concurrency: "unbounded" },
+       )
+ 
+-      const isWorkflow = language instanceof GitLabWorkflowLanguageModel
+       const prepared = yield* LLMRequestPrep.prepare({
+         ...input,
+         provider: item,
+         auth: info,
+         plugin,
+         flags,
+-        isWorkflow,
+       })
+ 
+-      // Wire up toolExecutor for DWS workflow models so that tool calls
+-      // from the workflow service are executed via opencode's tool system
+-      // and results sent back over the WebSocket.
+       const bridge = yield* EffectBridge.make()
+-      if (language instanceof GitLabWorkflowLanguageModel) {
+-        const workflowModel = language as GitLabWorkflowLanguageModel & {
+-          sessionID?: string
+-          sessionPreapprovedTools?: string[]
+-          approvalHandler?: (approvalTools: { name: string; args: string }[]) => Promise<{ approved: boolean }>
+-        }
+-        workflowModel.sessionID = input.sessionID
+-        workflowModel.systemPrompt = prepared.system.join("\n")
+-        workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
+-          const t = prepared.tools[toolName]
+-          if (!t || !t.execute) {
+-            return { result: "", error: `Unknown tool: ${toolName}` }
+-          }
+-          try {
+-            const result = await t.execute!(JSON.parse(argsJson), {
+-              toolCallId: _requestID,
+-              messages: input.messages,
+-              abortSignal: input.abort,
+-            })
+-            const output = typeof result === "string" ? result : (result?.output ?? JSON.stringify(result))
+-            return {
+-              result: output,
+-              metadata: typeof result === "object" ? result?.metadata : undefined,
+-              title: typeof result === "object" ? result?.title : undefined,
+-            }
+-          } catch (e: any) {
+-            return { result: "", error: e.message ?? String(e) }
+-          }
+-        }
+-
+-        const ruleset = Permission.merge(input.agent.permission ?? [], input.permission ?? [])
+-        workflowModel.sessionPreapprovedTools = Object.keys(prepared.tools).filter((name) => {
+-          const match = ruleset.findLast((rule) => Wildcard.match(name, rule.permission))
+-          return !match || match.action !== "ask"
+-        })
+-
+-        const approvedToolsForSession = new Set<string>()
+-        workflowModel.approvalHandler = bridge.bind(async (approvalTools) => {
+-          const uniqueNames = [...new Set(approvalTools.map((t: { name: string }) => t.name))] as string[]
+-          // Auto-approve tools that were already approved in this session
+-          // (prevents infinite approval loops for server-side MCP tools)
+-          if (uniqueNames.every((name) => approvedToolsForSession.has(name))) {
+-            return { approved: true }
+-          }
+-
+-          const id = PermissionV1.ID.ascending()
+-          let unsub: EventV2.Unsubscribe | undefined
+-          try {
+-            unsub = await bridge.promise(
+-              events.listen((event) => {
+-                if (event.type !== Permission.Event.Replied.type) return Effect.void
+-                const data = event.data as EventV2.Data<typeof Permission.Event.Replied>
+-                if (data.requestID !== id) return Effect.void
+-                void data.reply
+-                return Effect.void
+-              }),
+-            )
+-            const toolPatterns = approvalTools.map((t: { name: string; args: string }) => {
+-              try {
+-                const parsed = JSON.parse(t.args) as Record<string, unknown>
+-                const title = (parsed?.title ?? parsed?.name ?? "") as string
+-                return title ? `${t.name}: ${title}` : t.name
+-              } catch {
+-                return t.name
+-              }
+-            })
+-            const uniquePatterns = [...new Set(toolPatterns)] as string[]
+-            await bridge.promise(
+-              perm.ask({
+-                id,
+-                sessionID: SessionID.make(input.sessionID),
+-                permission: "workflow_tool_approval",
+-                patterns: uniquePatterns,
+-                metadata: { tools: approvalTools },
+-                always: uniquePatterns,
+-                ruleset: [],
+-              }),
+-            )
+-            for (const name of uniqueNames) approvedToolsForSession.add(name)
+-            workflowModel.sessionPreapprovedTools = [...(workflowModel.sessionPreapprovedTools ?? []), ...uniqueNames]
+-            return { approved: true }
+-          } catch {
+-            return { approved: false }
+-          } finally {
+-            if (unsub) await bridge.promise(unsub)
+-          }
+-        })
+-      }
+ 
+       const tracer = cfg.experimental?.openTelemetry
+         ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
+@@ -292,7 +198,6 @@ const live: Layer.Layer<
+             )
+           },
+           // Copilot returns the authoritative billed amount only in provider-specific response fields.
+-          includeRawChunks: input.model.providerID.includes("github-copilot"),
+           async experimental_repairToolCall(failed) {
+             const lower = failed.toolCall.toolName.toLowerCase()
+             if (lower !== failed.toolCall.toolName && prepared.tools[lower]) {
 diff --git a/packages/opencode/src/session/llm/native-request.ts b/packages/opencode/src/session/llm/native-request.ts
 index b7f30e2..9e47775 100644
 --- a/packages/opencode/src/session/llm/native-request.ts
@@ -13132,6 +13067,106 @@ index b7f30e2..9e47775 100644
    throw new Error(`Native LLM request adapter does not support provider package ${model.api.npm}`)
  }
  
+diff --git a/packages/opencode/src/session/llm/request.ts b/packages/opencode/src/session/llm/request.ts
+index a945b66..507742c 100644
+--- a/packages/opencode/src/session/llm/request.ts
++++ b/packages/opencode/src/session/llm/request.ts
+@@ -11,7 +11,7 @@ import { ProviderTransform } from "@/provider/transform"
+ import { SystemPrompt } from "../system"
+ import { InstallationVersion } from "@opencode-ai/core/installation/version"
+ import { Effect, Record } from "effect"
+-import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
++import type { ModelMessage, Tool } from "ai"
+ import type { Plugin } from "@/plugin"
+ import { mergeDeep } from "remeda"
+ 
+@@ -32,7 +32,6 @@ type PrepareInput = {
+   readonly auth: Auth.Info | undefined
+   readonly plugin: Plugin.Interface
+   readonly flags: RuntimeFlags.Info
+-  readonly isWorkflow: boolean
+ }
+ 
+ export type Prepared = {
+@@ -54,7 +53,6 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
+   mergeDeep(target, source ?? {}) as Record<string, any>
+ 
+ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
+-  const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
+   const system = [
+     [
+       ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
+@@ -89,27 +87,15 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
+         providerOptions: input.provider.options,
+       })
+   const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), variant)
+-  if (
+-    input.model.api.npm === "@ai-sdk/azure" &&
+-    (input.provider.options.useCompletionUrls || input.model.options.useCompletionUrls || options.useCompletionUrls)
+-  ) {
+-    delete options.reasoningSummary
+-    delete options.include
+-  }
+-  if (isOpenaiOauth) options.instructions = system.join("\n")
+-
+-  const messages =
+-    isOpenaiOauth || input.isWorkflow
+-      ? input.messages
+-      : [
+-          ...system.map(
+-            (x): ModelMessage => ({
+-              role: "system",
+-              content: x,
+-            }),
+-          ),
+-          ...input.messages,
+-        ]
++  const messages = [
++    ...system.map(
++      (x): ModelMessage => ({
++        role: "system",
++        content: x,
++      }),
++    ),
++    ...input.messages,
++  ]
+ 
+   const params = yield* input.plugin.trigger(
+     "chat.params",
+@@ -146,33 +132,6 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
+   )
+ 
+   const tools = resolveTools(input)
+-  // Codex parity: OpenAI Responses-family providers hardcode `strict: false`
+-  // on every function tool so MCP-sourced and dynamic schemas that don't
+-  // satisfy OpenAI's structured-outputs constraints still register.
+-  if (
+-    input.model.api.npm === "@ai-sdk/openai" ||
+-    input.model.api.npm === "@ai-sdk/azure" ||
+-    input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle"
+-  ) {
+-    for (const key of Object.keys(tools)) tools[key] = { ...tools[key], strict: false }
+-  }
+-  if (
+-    input.model.providerID.includes("github-copilot") &&
+-    Object.keys(tools).length === 0 &&
+-    hasToolCalls(input.messages)
+-  ) {
+-    // Copilot needs a tools field when replaying prior tool calls, even if no tools are currently enabled.
+-    tools["_noop"] = aiTool({
+-      description: "Do not call this tool. It exists only for API compatibility and must never be invoked.",
+-      inputSchema: jsonSchema({
+-        type: "object",
+-        properties: {
+-          reason: { type: "string", description: "Unused" },
+-        },
+-      }),
+-      execute: async () => ({ output: "", title: "", metadata: {} }),
+-    })
+-  }
+ 
+   const opencodeProjectID = input.model.providerID.startsWith("opencode")
+     ? (yield* InstanceState.context).project.id
 diff --git a/packages/tui/src/component/dialog-provider.tsx b/packages/tui/src/component/dialog-provider.tsx
 index 6b86a32..4e02896 100644
 --- a/packages/tui/src/component/dialog-provider.tsx
