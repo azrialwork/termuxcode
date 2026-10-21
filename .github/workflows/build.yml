@@ -156,8 +156,6 @@ jobs:
             arch: x64
           - profile: slim
             arch: arm64
-          - profile: slim
-            arch: x64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -189,6 +187,9 @@ jobs:
           git -C upstream apply \
             "$GITHUB_WORKSPACE/self/patches/0001-android-build.patch" \
             "$GITHUB_WORKSPACE/self/patches/0002-bundle-metafile.patch"
+          if [ "${{ matrix.profile }}" = "slim" ]; then
+            git -C upstream apply "$GITHUB_WORKSPACE/self/patches/slim/"*.patch
+          fi
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -253,8 +254,6 @@ jobs:
             arch: x64
           - profile: slim
             arch: arm64
-          - profile: slim
-            arch: x64
     steps:
       - uses: actions/checkout@v4
 
@@ -273,12 +272,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p extract
-          tar -xzf pkg/termuxcode-*-${{ matrix.arch }}.tar.gz -C extract
+          if [ "${{ matrix.profile }}" = "slim" ]; then
+            dpkg-deb -x pkg/*.deb extract
+            root=extract/data/data/com.termux/files/usr
+          else
+            tar -xzf pkg/termuxcode-*-${{ matrix.arch }}.tar.gz -C extract
+            root=extract
+          fi
           bash scripts/verify.sh \
-            extract/lib/termuxcode/termuxcode \
-            extract/lib/termuxcode/libopentui.so \
+            "$root/lib/termuxcode/termuxcode" \
+            "$root/lib/termuxcode/libopentui.so" \
             "${{ matrix.arch }}" \
-            extract/lib/termuxcode/libtermuxcode-compat.so
+            "$root/lib/termuxcode/libtermuxcode-compat.so"
 
       - name: Compare with full
         if: matrix.profile == 'slim'

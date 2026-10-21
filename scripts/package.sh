@@ -27,9 +27,13 @@ check_layout() {
 full_version="${version}${suffix}"
 
 mkdir -p "$out"
-archive="$out/termuxcode-${full_version}-${arch}.tar.gz"
-tar -C "$bundle" -czf "$archive" .
-check_layout "$archive" "$(tar -tzf "$archive" | grep -v '/$' | sed 's|^\./||' | sort)"
+
+# The slim profile is Termux-only: it ships a .deb, not a portable tarball.
+if [ -z "$suffix" ]; then
+  archive="$out/termuxcode-${full_version}-${arch}.tar.gz"
+  tar -C "$bundle" -czf "$archive" .
+  check_layout "$archive" "$(tar -tzf "$archive" | grep -v '/$' | sed 's|^\./||' | sort)"
+fi
 
 if [ "$arch" != "arm64" ]; then
   exit 0

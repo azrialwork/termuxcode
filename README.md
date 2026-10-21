@@ -134,10 +134,11 @@ its caveats are in [`docs/benchmarks.md`](docs/benchmarks.md). Build profiles li
 in `profiles/`; `profiles/slim.env` carries the size and memory budgets that a
 trimmed build must respect.
 
-Both profiles are built from the same upstream tree and patch series, and every
-build uploads a Bun bundle map (`metafile-<profile>-<arch>`) that lists every
-module and its bytes. The slim profile currently differs only in its package
-version (`+slim1`): nothing is trimmed until the measurements justify it.
+Both profiles are built from the same upstream tree; every build uploads a Bun
+bundle map (`metafile-<profile>-<arch>`) that lists every module and its bytes.
+The slim profile is Termux-only: `patches/slim/` drops the install methods for
+other distros along with the `upgrade` and `uninstall` commands, it builds a
+single `aarch64` `.deb`, and it ships no portable tarball.
 
 ## Limitations
 

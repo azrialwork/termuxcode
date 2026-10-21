@@ -1,0 +1,784 @@
+diff --git a/packages/opencode/src/cli/cmd/uninstall.ts b/packages/opencode/src/cli/cmd/uninstall.ts
+deleted file mode 100644
+index 0afdc51..0000000
+--- a/packages/opencode/src/cli/cmd/uninstall.ts
++++ /dev/null
+@@ -1,353 +0,0 @@
+-import type { Argv } from "yargs"
+-import { UI } from "../ui"
+-import * as prompts from "@clack/prompts"
+-import { Installation } from "../../installation"
+-import { Global } from "@opencode-ai/core/global"
+-import fs from "fs/promises"
+-import path from "path"
+-import os from "os"
+-import { Filesystem } from "@/util/filesystem"
+-import { Process } from "@/util/process"
+-
+-interface UninstallArgs {
+-  keepConfig: boolean
+-  keepData: boolean
+-  dryRun: boolean
+-  force: boolean
+-}
+-
+-interface RemovalTargets {
+-  directories: Array<{ path: string; label: string; keep: boolean }>
+-  shellConfig: string | null
+-  binary: string | null
+-}
+-
+-export const UninstallCommand = {
+-  command: "uninstall",
+-  describe: "uninstall opencode and remove all related files",
+-  builder: (yargs: Argv) =>
+-    yargs
+-      .option("keep-config", {
+-        alias: "c",
+-        type: "boolean",
+-        describe: "keep configuration files",
+-        default: false,
+-      })
+-      .option("keep-data", {
+-        alias: "d",
+-        type: "boolean",
+-        describe: "keep session data and snapshots",
+-        default: false,
+-      })
+-      .option("dry-run", {
+-        type: "boolean",
+-        describe: "show what would be removed without removing",
+-        default: false,
+-      })
+-      .option("force", {
+-        alias: "f",
+-        type: "boolean",
+-        describe: "skip confirmation prompts",
+-        default: false,
+-      }),
+-
+-  handler: async (args: UninstallArgs) => {
+-    UI.empty()
+-    UI.println(UI.logo("  "))
+-    UI.empty()
+-    prompts.intro("Uninstall OpenCode")
+-
+-    const method = await Installation.method()
+-    prompts.log.info(`Installation method: ${method}`)
+-
+-    const targets = await collectRemovalTargets(args, method)
+-
+-    await showRemovalSummary(targets, method)
+-
+-    if (!args.force && !args.dryRun) {
+-      const confirm = await prompts.confirm({
+-        message: "Are you sure you want to uninstall?",
+-        initialValue: false,
+-      })
+-      if (!confirm || prompts.isCancel(confirm)) {
+-        prompts.outro("Cancelled")
+-        return
+-      }
+-    }
+-
+-    if (args.dryRun) {
+-      prompts.log.warn("Dry run - no changes made")
+-      prompts.outro("Done")
+-      return
+-    }
+-
+-    await executeUninstall(method, targets)
+-
+-    prompts.outro("Done")
+-  },
+-}
+-
+-async function collectRemovalTargets(args: UninstallArgs, method: Installation.Method): Promise<RemovalTargets> {
+-  const directories: RemovalTargets["directories"] = [
+-    { path: Global.Path.data, label: "Data", keep: args.keepData },
+-    { path: Global.Path.cache, label: "Cache", keep: false },
+-    { path: Global.Path.config, label: "Config", keep: args.keepConfig },
+-    { path: Global.Path.state, label: "State", keep: false },
+-  ]
+-
+-  const shellConfig = method === "curl" ? await getShellConfigFile() : null
+-  const binary = method === "curl" ? process.execPath : null
+-
+-  return { directories, shellConfig, binary }
+-}
+-
+-async function showRemovalSummary(targets: RemovalTargets, method: Installation.Method) {
+-  prompts.log.message("The following will be removed:")
+-
+-  for (const dir of targets.directories) {
+-    const exists = await fs
+-      .access(dir.path)
+-      .then(() => true)
+-      .catch(() => false)
+-    if (!exists) continue
+-
+-    const size = await getDirectorySize(dir.path)
+-    const sizeStr = formatSize(size)
+-    const status = dir.keep ? UI.Style.TEXT_DIM + "(keeping)" : ""
+-    const prefix = dir.keep ? "○" : "✓"
+-
+-    prompts.log.info(`  ${prefix} ${dir.label}: ${shortenPath(dir.path)} ${UI.Style.TEXT_DIM}(${sizeStr})${status}`)
+-  }
+-
+-  if (targets.binary) {
+-    prompts.log.info(`  ✓ Binary: ${shortenPath(targets.binary)}`)
+-  }
+-
+-  if (targets.shellConfig) {
+-    prompts.log.info(`  ✓ Shell PATH in ${shortenPath(targets.shellConfig)}`)
+-  }
+-
+-  if (method !== "curl" && method !== "unknown") {
+-    const cmds: Record<string, string> = {
+-      npm: "npm uninstall -g opencode-ai",
+-      pnpm: "pnpm uninstall -g opencode-ai",
+-      bun: "bun remove -g opencode-ai",
+-      yarn: "yarn global remove opencode-ai",
+-      brew: "brew uninstall opencode",
+-      choco: "choco uninstall opencode",
+-      scoop: "scoop uninstall opencode",
+-    }
+-    prompts.log.info(`  ✓ Package: ${cmds[method] || method}`)
+-  }
+-}
+-
+-async function executeUninstall(method: Installation.Method, targets: RemovalTargets) {
+-  const spinner = prompts.spinner()
+-  const errors: string[] = []
+-
+-  for (const dir of targets.directories) {
+-    if (dir.keep) {
+-      prompts.log.step(`Skipping ${dir.label} (--keep-${dir.label.toLowerCase()})`)
+-      continue
+-    }
+-
+-    const exists = await fs
+-      .access(dir.path)
+-      .then(() => true)
+-      .catch(() => false)
+-    if (!exists) continue
+-
+-    spinner.start(`Removing ${dir.label}...`)
+-    const err = await fs.rm(dir.path, { recursive: true, force: true }).catch((e) => e)
+-    if (err) {
+-      spinner.stop(`Failed to remove ${dir.label}`, 1)
+-      errors.push(`${dir.label}: ${err.message}`)
+-      continue
+-    }
+-    spinner.stop(`Removed ${dir.label}`)
+-  }
+-
+-  if (targets.shellConfig) {
+-    spinner.start("Cleaning shell config...")
+-    const err = await cleanShellConfig(targets.shellConfig).catch((e) => e)
+-    if (err) {
+-      spinner.stop("Failed to clean shell config", 1)
+-      errors.push(`Shell config: ${err.message}`)
+-    } else {
+-      spinner.stop("Cleaned shell config")
+-    }
+-  }
+-
+-  if (method !== "curl" && method !== "unknown") {
+-    const cmds: Record<string, string[]> = {
+-      npm: ["npm", "uninstall", "-g", "opencode-ai"],
+-      pnpm: ["pnpm", "uninstall", "-g", "opencode-ai"],
+-      bun: ["bun", "remove", "-g", "opencode-ai"],
+-      yarn: ["yarn", "global", "remove", "opencode-ai"],
+-      brew: ["brew", "uninstall", "opencode"],
+-      choco: ["choco", "uninstall", "opencode"],
+-      scoop: ["scoop", "uninstall", "opencode"],
+-    }
+-
+-    const cmd = cmds[method]
+-    if (cmd) {
+-      spinner.start(`Running ${cmd.join(" ")}...`)
+-      const result = await Process.run(method === "choco" ? ["choco", "uninstall", "opencode", "-y", "-r"] : cmd, {
+-        nothrow: true,
+-      })
+-      if (result.code !== 0) {
+-        spinner.stop(`Package manager uninstall failed: exit code ${result.code}`, 1)
+-        const text = `${result.stdout.toString("utf8")}\n${result.stderr.toString("utf8")}`
+-        if (method === "choco" && text.includes("not running from an elevated command shell")) {
+-          prompts.log.warn(`You may need to run '${cmd.join(" ")}' from an elevated command shell`)
+-        } else {
+-          prompts.log.warn(`You may need to run manually: ${cmd.join(" ")}`)
+-        }
+-      } else {
+-        spinner.stop("Package removed")
+-      }
+-    }
+-  }
+-
+-  if (method === "curl" && targets.binary) {
+-    UI.empty()
+-    prompts.log.message("To finish removing the binary, run:")
+-    prompts.log.info(`  rm "${targets.binary}"`)
+-
+-    const binDir = path.dirname(targets.binary)
+-    if (binDir.includes(".opencode")) {
+-      prompts.log.info(`  rmdir "${binDir}" 2>/dev/null`)
+-    }
+-  }
+-
+-  if (errors.length > 0) {
+-    UI.empty()
+-    prompts.log.warn("Some operations failed:")
+-    for (const err of errors) {
+-      prompts.log.error(`  ${err}`)
+-    }
+-  }
+-
+-  UI.empty()
+-  prompts.log.success("Thank you for using OpenCode!")
+-}
+-
+-async function getShellConfigFile(): Promise<string | null> {
+-  const shell = path.basename(process.env.SHELL || "bash")
+-  const home = os.homedir()
+-  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(home, ".config")
+-
+-  const configFiles: Record<string, string[]> = {
+-    fish: [path.join(xdgConfig, "fish", "config.fish")],
+-    zsh: [
+-      path.join(home, ".zshrc"),
+-      path.join(home, ".zshenv"),
+-      path.join(xdgConfig, "zsh", ".zshrc"),
+-      path.join(xdgConfig, "zsh", ".zshenv"),
+-    ],
+-    bash: [
+-      path.join(home, ".bashrc"),
+-      path.join(home, ".bash_profile"),
+-      path.join(home, ".profile"),
+-      path.join(xdgConfig, "bash", ".bashrc"),
+-      path.join(xdgConfig, "bash", ".bash_profile"),
+-    ],
+-    ash: [path.join(home, ".ashrc"), path.join(home, ".profile")],
+-    sh: [path.join(home, ".profile")],
+-  }
+-
+-  const candidates = configFiles[shell] || configFiles.bash
+-
+-  for (const file of candidates) {
+-    const exists = await fs
+-      .access(file)
+-      .then(() => true)
+-      .catch(() => false)
+-    if (!exists) continue
+-
+-    const content = await Filesystem.readText(file).catch(() => "")
+-    if (content.includes("# opencode") || content.includes(".opencode/bin")) {
+-      return file
+-    }
+-  }
+-
+-  return null
+-}
+-
+-async function cleanShellConfig(file: string) {
+-  const content = await Filesystem.readText(file)
+-  const lines = content.split("\n")
+-
+-  const filtered: string[] = []
+-  let skip = false
+-
+-  for (const line of lines) {
+-    const trimmed = line.trim()
+-
+-    if (trimmed === "# opencode") {
+-      skip = true
+-      continue
+-    }
+-
+-    if (skip) {
+-      skip = false
+-      if (trimmed.includes(".opencode/bin") || trimmed.includes("fish_add_path")) {
+-        continue
+-      }
+-    }
+-
+-    if (
+-      (trimmed.startsWith("export PATH=") && trimmed.includes(".opencode/bin")) ||
+-      (trimmed.startsWith("fish_add_path") && trimmed.includes(".opencode"))
+-    ) {
+-      continue
+-    }
+-
+-    filtered.push(line)
+-  }
+-
+-  while (filtered.length > 0 && filtered[filtered.length - 1].trim() === "") {
+-    filtered.pop()
+-  }
+-
+-  const output = filtered.join("\n") + "\n"
+-  await Filesystem.write(file, output)
+-}
+-
+-async function getDirectorySize(dir: string): Promise<number> {
+-  let total = 0
+-
+-  const walk = async (current: string) => {
+-    const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => [])
+-
+-    for (const entry of entries) {
+-      const full = path.join(current, entry.name)
+-      if (entry.isDirectory()) {
+-        await walk(full)
+-        continue
+-      }
+-      if (entry.isFile()) {
+-        const stat = await fs.stat(full).catch(() => null)
+-        if (stat) total += stat.size
+-      }
+-    }
+-  }
+-
+-  await walk(dir)
+-  return total
+-}
+-
+-function formatSize(bytes: number): string {
+-  if (bytes < 1024) return `${bytes} B`
+-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+-}
+-
+-function shortenPath(p: string): string {
+-  const home = os.homedir()
+-  if (p.startsWith(home)) {
+-    return p.replace(home, "~")
+-  }
+-  return p
+-}
+diff --git a/packages/opencode/src/cli/cmd/upgrade.ts b/packages/opencode/src/cli/cmd/upgrade.ts
+deleted file mode 100644
+index b329317..0000000
+--- a/packages/opencode/src/cli/cmd/upgrade.ts
++++ /dev/null
+@@ -1,105 +0,0 @@
+-import type { Argv } from "yargs"
+-import { UI } from "../ui"
+-import * as prompts from "@clack/prompts"
+-import { Installation } from "../../installation"
+-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+-
+-export const UpgradeCommand = {
+-  command: "upgrade [target]",
+-  describe: "upgrade opencode to the latest or a specific version",
+-  builder: (yargs: Argv) => {
+-    return yargs
+-      .positional("target", {
+-        describe: "version to upgrade to, for ex '0.1.48' or 'v0.1.48'",
+-        type: "string",
+-      })
+-      .option("method", {
+-        alias: "m",
+-        describe: "installation method to use",
+-        type: "string",
+-        choices: ["curl", "npm", "pnpm", "bun", "brew", "choco", "scoop"],
+-      })
+-      .option("major", {
+-        describe: "upgrade to OpenCode 2 and remove OpenCode 1",
+-        type: "boolean",
+-      })
+-  },
+-  handler: async (args: { target?: string; method?: string; major?: boolean }) => {
+-    UI.empty()
+-    UI.println(UI.logo("  "))
+-    UI.empty()
+-    prompts.intro("Upgrade")
+-    const detectedMethod = await Installation.method()
+-    const method = (args.method as Installation.Method) ?? detectedMethod
+-    if (method === "unknown") {
+-      prompts.log.error(`opencode is installed to ${process.execPath} and may be managed by a package manager`)
+-      const install = await prompts.select({
+-        message: "Install anyways?",
+-        options: [
+-          { label: "Yes", value: true },
+-          { label: "No", value: false },
+-        ],
+-        initialValue: false,
+-      })
+-      if (!install) {
+-        prompts.outro("Done")
+-        return
+-      }
+-    }
+-    prompts.log.info("Using method: " + method)
+-
+-    if (args.major) {
+-      prompts.log.info(`From ${InstallationVersion} → OpenCode 2`)
+-      const spinner = prompts.spinner()
+-      spinner.start("Installing OpenCode 2...")
+-      const err = await Installation.upgradeMajor(method).catch((err) => err)
+-      if (err) {
+-        spinner.stop("Upgrade failed", 1)
+-        if (err instanceof Error) prompts.log.error(err.message)
+-        prompts.log.info(`To install OpenCode 2 manually, see ${Installation.MAJOR_INSTRUCTIONS}`)
+-        prompts.outro("Done")
+-        return
+-      }
+-      spinner.stop("OpenCode 2 installed")
+-      prompts.outro("Done")
+-      return
+-    }
+-
+-    const target = args.target
+-      ? args.target.replace(/^v/, "")
+-      : await Installation.latest(method).catch(() => undefined)
+-    if (!target) {
+-      prompts.log.error("Couldn't check for updates")
+-      prompts.outro("Done")
+-      return
+-    }
+-
+-    if (InstallationVersion === target) {
+-      prompts.log.warn(`opencode upgrade skipped: ${target} is already installed`)
+-      prompts.log.info("OpenCode 2 is available. Upgrade with `opencode upgrade --major`")
+-      prompts.outro("Done")
+-      return
+-    }
+-
+-    prompts.log.info(`From ${InstallationVersion} → ${target}`)
+-    const spinner = prompts.spinner()
+-    spinner.start("Upgrading...")
+-    const err = await Installation.upgrade(method, target).catch((err) => err)
+-    if (err) {
+-      spinner.stop("Upgrade failed", 1)
+-      if (err instanceof Installation.UpgradeFailedError) {
+-        // necessary because choco only allows install/upgrade in elevated terminals
+-        if (method === "choco" && err.stderr.includes("not running from an elevated command shell")) {
+-          prompts.log.error("Please run the terminal as Administrator and try again")
+-        } else {
+-          prompts.log.error(err.stderr)
+-        }
+-      } else if (err instanceof Error) prompts.log.error(err.message)
+-      prompts.outro("Done")
+-      return
+-    }
+-    spinner.stop("Upgrade complete")
+-    prompts.log.info("OpenCode 2 is available. Upgrade with `opencode upgrade --major`")
+-    prompts.outro("Done")
+-  },
+-}
+diff --git a/packages/opencode/src/config/managed.ts b/packages/opencode/src/config/managed.ts
+index 877d30a..273a707 100644
+--- a/packages/opencode/src/config/managed.ts
++++ b/packages/opencode/src/config/managed.ts
+@@ -1,69 +1,15 @@
+ export * as ConfigManaged from "./managed"
+ 
+-import { existsSync } from "fs"
+-import os from "os"
+-import path from "path"
+-import { Process } from "@/util/process"
+-
+-const MANAGED_PLIST_DOMAIN = "ai.opencode.managed"
+-
+-// Keys injected by macOS/MDM into the managed plist that are not OpenCode config
+-const PLIST_META = new Set([
+-  "PayloadDisplayName",
+-  "PayloadIdentifier",
+-  "PayloadType",
+-  "PayloadUUID",
+-  "PayloadVersion",
+-  "_manualProfile",
+-])
+-
+ function systemManagedConfigDir(): string {
+-  switch (process.platform) {
+-    case "darwin":
+-      return "/Library/Application Support/opencode"
+-    case "win32":
+-      return path.join(process.env.ProgramData || "C:\\ProgramData", "opencode")
+-    default:
+-      return "/etc/opencode"
+-  }
++  return "/etc/opencode"
+ }
+ 
+ export function managedConfigDir() {
+   return process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR || systemManagedConfigDir()
+ }
+ 
+-export function parseManagedPlist(json: string): string {
+-  const raw = JSON.parse(json)
+-  for (const key of Object.keys(raw)) {
+-    if (PLIST_META.has(key)) delete raw[key]
+-  }
+-  return JSON.stringify(raw)
+-}
+-
++// Termux has no macOS managed preferences; the Linux managed directory is the
++// only source.
+ export async function readManagedPreferences() {
+-  if (process.platform !== "darwin") return
+-
+-  const user = (() => {
+-    try {
+-      return os.userInfo().username || "user"
+-    } catch {
+-      return "user"
+-    }
+-  })()
+-  const paths = [
+-    path.join("/Library/Managed Preferences", user, `${MANAGED_PLIST_DOMAIN}.plist`),
+-    path.join("/Library/Managed Preferences", `${MANAGED_PLIST_DOMAIN}.plist`),
+-  ]
+-
+-  for (const plist of paths) {
+-    if (!existsSync(plist)) continue
+-    const result = await Process.run(["plutil", "-convert", "json", "-o", "-", plist], { nothrow: true })
+-    if (result.code !== 0) continue
+-    return {
+-      source: `mobileconfig:${plist}`,
+-      text: parseManagedPlist(result.stdout.toString()),
+-    }
+-  }
+-
+   return
+ }
+diff --git a/packages/opencode/src/index.ts b/packages/opencode/src/index.ts
+index 13540a7..120b325 100644
+--- a/packages/opencode/src/index.ts
++++ b/packages/opencode/src/index.ts
+@@ -5,8 +5,6 @@ import { GenerateCommand } from "./cli/cmd/generate"
+ import { ConsoleCommand } from "./cli/cmd/account"
+ import { ProvidersCommand } from "./cli/cmd/providers"
+ import { AgentCommand } from "./cli/cmd/agent"
+-import { UpgradeCommand } from "./cli/cmd/upgrade"
+-import { UninstallCommand } from "./cli/cmd/uninstall"
+ import { ModelsCommand } from "./cli/cmd/models"
+ import { UI } from "./cli/ui"
+ import { InstallationVersion } from "@opencode-ai/core/installation/version"
+@@ -88,8 +86,6 @@ const cli = yargs(args)
+   .command(ConsoleCommand)
+   .command(ProvidersCommand)
+   .command(AgentCommand)
+-  .command(UpgradeCommand)
+-  .command(UninstallCommand)
+   .command(ServeCommand)
+   .command(WebCommand)
+   .command(ModelsCommand)
+diff --git a/packages/opencode/src/tool/shell.ts b/packages/opencode/src/tool/shell.ts
+index 1e4423e..b7bbdef 100644
+--- a/packages/opencode/src/tool/shell.ts
++++ b/packages/opencode/src/tool/shell.ts
+@@ -139,9 +139,7 @@ function home(text: string) {
+ }
+ 
+ function envValue(key: string) {
+-  if (process.platform !== "win32") return process.env[key]
+-  const name = Object.keys(process.env).find((item) => item.toLowerCase() === key.toLowerCase())
+-  return name ? process.env[name] : undefined
++  return process.env[key]
+ }
+ 
+ function auto(key: string, cwd: string, shell: string) {
+@@ -263,10 +261,7 @@ const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boole
+ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, input: { command: string }) {
+   if (scan.dirs.size > 0) {
+     const directories = Array.from(scan.dirs)
+-    const globs = directories.map((dir) => {
+-      if (process.platform === "win32") return FSUtil.normalizePathPattern(path.join(dir, "*"))
+-      return path.join(dir, "*")
+-    })
++    const globs = directories.map((dir) => path.join(dir, "*"))
+     yield* ctx.ask({
+       permission: "external_directory",
+       patterns: globs,
+@@ -291,21 +286,12 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
+ })
+ 
+ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
+-  if (process.platform === "win32" && Shell.ps(shell)) {
+-    return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+-      cwd,
+-      env,
+-      stdin: "ignore",
+-      detached: false,
+-    })
+-  }
+-
+   return ChildProcess.make(command, [], {
+     shell,
+     cwd,
+     env,
+     stdin: "ignore",
+-    detached: process.platform !== "win32",
++    detached: true,
+   })
+ }
+ const parser = lazy(async () => {
+@@ -346,23 +332,7 @@ export const ShellTool = Tool.define(
+     const flags = yield* RuntimeFlags.Service
+     const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
+ 
+-    const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
+-      const lines = yield* spawner
+-        .lines(ChildProcess.make(shell, ["-lc", 'cygpath -w -- "$1"', "_", text]))
+-        .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+-      const file = lines[0]?.trim()
+-      if (!file) return
+-      return FSUtil.normalizePath(file)
+-    })
+-
+-    const resolvePath = Effect.fn("ShellTool.resolvePath")(function* (text: string, root: string, shell: string) {
+-      if (process.platform === "win32") {
+-        if (Shell.posix(shell) && text.startsWith("/") && FSUtil.windowsPath(text) === text) {
+-          const file = yield* cygpath(shell, text)
+-          if (file) return file
+-        }
+-        return FSUtil.normalizePath(path.resolve(root, FSUtil.windowsPath(text)))
+-      }
++    const resolvePath = Effect.fn("ShellTool.resolvePath")(function* (text: string, root: string) {
+       return path.resolve(root, text)
+     })
+ 
+@@ -372,7 +342,7 @@ export const ShellTool = Tool.define(
+       if (!file || dynamic(file, ps)) return
+       const next = ps ? provider(file) : file
+       if (!next) return
+-      return yield* resolvePath(next, cwd, shell)
++      return yield* resolvePath(next, cwd)
+     })
+ 
+     const collect = Effect.fn("ShellTool.collect")(function* (
+@@ -600,7 +570,7 @@ export const ShellTool = Tool.define(
+         const shell = Shell.acceptable(cfg.shell)
+         const name = Shell.name(shell)
+         const limits = yield* trunc.limits()
+-        const prompt = ShellPrompt.render(name, process.platform, limits, defaultTimeoutMs)
++        const prompt = ShellPrompt.render(name, "linux", limits, defaultTimeoutMs)
+         yield* Effect.logInfo("shell tool using shell", { shell })
+ 
+         return {
+@@ -610,7 +580,7 @@ export const ShellTool = Tool.define(
+             Effect.gen(function* () {
+               const instanceCtx = yield* InstanceState.context
+               const cwd = params.workdir
+-                ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
++                ? yield* resolvePath(params.workdir, instanceCtx.directory)
+                 : instanceCtx.directory
+               if (params.timeout !== undefined && params.timeout < 0) {
+                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
+diff --git a/packages/opencode/src/util/archive.ts b/packages/opencode/src/util/archive.ts
+index 8fc5497..f1ee80a 100644
+--- a/packages/opencode/src/util/archive.ts
++++ b/packages/opencode/src/util/archive.ts
+@@ -1,16 +1,6 @@
+-import path from "path"
+ import * as Process from "./process"
+ 
+ export async function extractZip(zipPath: string, destDir: string) {
+-  if (process.platform === "win32") {
+-    const winZipPath = path.resolve(zipPath)
+-    const winDestDir = path.resolve(destDir)
+-    // $global:ProgressPreference suppresses PowerShell's blue progress bar popup
+-    const cmd = `$global:ProgressPreference = 'SilentlyContinue'; Expand-Archive -Path '${winZipPath}' -DestinationPath '${winDestDir}' -Force`
+-    await Process.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd])
+-    return
+-  }
+-
+   await Process.run(["unzip", "-o", "-q", zipPath, "-d", destDir])
+ }
+ 
+diff --git a/packages/opencode/src/util/filesystem.ts b/packages/opencode/src/util/filesystem.ts
+index 78a8917..b9a14ba 100644
+--- a/packages/opencode/src/util/filesystem.ts
++++ b/packages/opencode/src/util/filesystem.ts
+@@ -1,7 +1,7 @@
+ import { chmod, mkdir, readFile, stat as statFile, writeFile } from "fs/promises"
+ import { createWriteStream, existsSync, statSync } from "fs"
+ import { realpathSync } from "fs"
+-import { dirname, isAbsolute, join, resolve as pathResolve, win32 } from "path"
++import { dirname, isAbsolute, join, resolve as pathResolve } from "path"
+ import { Readable } from "stream"
+ import { pipeline } from "stream/promises"
+ import { Glob } from "@opencode-ai/core/util/glob"
+@@ -107,28 +107,12 @@ export async function mimeType(p: string): Promise<string> {
+   return lookup(p) || "application/octet-stream"
+ }
+ 
+-/**
+- * On Windows, normalize a path to its canonical casing using the filesystem.
+- * This is needed because Windows paths are case-insensitive but LSP servers
+- * may return paths with different casing than what we send them.
+- */
+ export function normalizePath(p: string): string {
+-  if (process.platform !== "win32") return p
+-  const resolved = win32.normalize(win32.resolve(windowsPath(p)))
+-  try {
+-    return realpathSync.native(resolved)
+-  } catch {
+-    return resolved
+-  }
++  return p
+ }
+ 
+ export function normalizePathPattern(p: string): string {
+-  if (process.platform !== "win32") return p
+-  if (p === "*") return p
+-  const match = p.match(/^(.*)[\\/]\*$/)
+-  if (!match) return normalizePath(p)
+-  const dir = /^[A-Za-z]:$/.test(match[1]) ? match[1] + "\\" : match[1]
+-  return join(normalizePath(dir), "*")
++  return p
+ }
+ 
+ // We cannot rely on path.resolve() here because git.exe may come from Git Bash, Cygwin, or MSYS2, so we need to translate these paths at the boundary.
+@@ -151,17 +135,7 @@ export function resolveFilePath(root: string, file: string): string {
+ }
+ 
+ export function windowsPath(p: string): string {
+-  if (process.platform !== "win32") return p
+-  return (
+-    p
+-      .replace(/^\/([a-zA-Z]):(?:[\\/]|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      // Git Bash for Windows paths are typically /<drive>/...
+-      .replace(/^\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      // Cygwin git paths are typically /cygdrive/<drive>/...
+-      .replace(/^\/cygdrive\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      // WSL paths are typically /mnt/<drive>/...
+-      .replace(/^\/mnt\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-  )
++  return p
+ }
+ export function overlaps(a: string, b: string) {
+   return FSUtil.overlaps(a, b)
+diff --git a/packages/opencode/src/util/process.ts b/packages/opencode/src/util/process.ts
+index 173210f..657c3c3 100644
+--- a/packages/opencode/src/util/process.ts
++++ b/packages/opencode/src/util/process.ts
+@@ -65,7 +65,6 @@ export function spawn(cmd: string[], opts: Options = {}): Child {
+     shell: opts.shell,
+     env: opts.env === null ? {} : opts.env ? { ...process.env, ...opts.env } : undefined,
+     stdio: [opts.stdin ?? "ignore", opts.stdout ?? "ignore", opts.stderr ?? "ignore"],
+-    windowsHide: process.platform === "win32",
+   })
+ 
+   let closed = false
+@@ -149,16 +148,6 @@ export async function run(cmd: string[], opts: RunOptions = {}): Promise<Result>
+ export async function stop(proc: ChildProcess) {
+   if (proc.exitCode !== null || proc.signalCode !== null) return
+ 
+-  if (process.platform !== "win32" || !proc.pid) {
+-    proc.kill()
+-    return
+-  }
+-
+-  const out = await run(["taskkill", "/pid", String(proc.pid), "/T", "/F"], {
+-    nothrow: true,
+-  })
+-
+-  if (out.code === 0) return
+   proc.kill()
+ }
+ 

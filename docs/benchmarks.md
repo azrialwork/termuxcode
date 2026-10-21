@@ -55,14 +55,16 @@ Raw output of the baseline run: [`2026-10-22-v1.19.3.json`](2026-10-22-v1.19.3.j
 `profiles/full.env` and `profiles/slim.env` are the single place where a profile
 is defined. The workflow builds both from the same upstream checkout and patches,
 and names artifacts after the profile (`package-full`, `package-slim`,
-`metafile-slim-arm64`, ...). `slim` is not trimmed yet: its only difference is the
-package version suffix `+slim1`, and the verify job asserts that the slim and
-full binaries are byte-identical. That is the point: the pipe is proven neutral
-before anything is removed.
+`metafile-slim-arm64`, ...). `slim` targets Termux only: it builds a single
+`aarch64` package, ships no portable tarball, and applies `patches/slim/`, which
+removes the install methods for other distros (npm, brew, scoop, choco), the
+`upgrade` and `uninstall` commands, and the Windows/macOS code paths.
 
-The first profile run (`39662040825`, commit `3c83776`) passed that check: the
-`arm64` binaries were byte-identical, so the plumbing does not alter the build.
-The bundle it produced is broken down in [`bundle-map.md`](bundle-map.md).
+The first two profile runs (`39662040825`, `39662819325`) proved the pipe neutral:
+slim and full binaries were byte-identical before any patch. The verify job now
+asserts the opposite side: the slim binary is smaller, and the deleted command
+modules are absent from its bundle map. The pre-trim bundle is broken down in
+[`bundle-map.md`](bundle-map.md).
 
 Only a tagged release publishes the slim package. The default `latest` installer
 still selects the full package; `TERMUXCODE_PROFILE=slim` selects the slim one
