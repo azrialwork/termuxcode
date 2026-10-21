@@ -46,12 +46,13 @@ rep() {
 
 # step_done <number> <label> <state> <color> <detail>
 step_done() {
-  local num=$1 label=$2 state=$3 color=$4 detail=${5:-} pad dots
+  local num=$1 label=$2 state=$3 color=$4 detail=${5:-} pad dots tag
   pad=$((16 - ${#label}))
   [ "$pad" -lt 1 ] && pad=1
   dots=$(rep '.' "$pad")
-  printf "  ${D}[%s]${R} ${B}%s${R} %s ${color}[%s]${R} %s\n" \
-    "$num" "$label" "$dots" "$state" "$detail" >"$UI"
+  tag=$(printf '[%-4s]' "$state")
+  printf "  ${D}[%s]${R} ${B}%s${R} %s ${color}%s${R} %s\n" \
+    "$num" "$label" "$dots" "$tag" "$detail" >"$UI"
 }
 
 step_ok() { step_done "$1" "$2" "ok" "$GREEN" "${3:-}"; }
@@ -63,6 +64,8 @@ box_rule() { printf '  +%s+\n' "$(rep '-' $((BOX_W + 4)))" >"$UI"; }
 # One content row. text is always <= BOX_W wide, so the border line stays put.
 box_row() {
   local text=$1 pad
+  # Clamp so a stray long string can never push the right border out of line.
+  [ "${#text}" -gt "$BOX_W" ] && text="${text:0:BOX_W}"
   pad=$((BOX_W - ${#text}))
   printf '  |  %s%s  |\n' "$text" "$(rep ' ' "$pad")" >"$UI"
 }
@@ -181,7 +184,7 @@ if [ "$skip_install" = 0 ]; then
     }
   fi
 
-  say "  ${D}downloading ${deb} (${version})${R}"
+  say "  ${D}downloading ${deb} (v${version})${R}"
 
   if [ "$UI" = /dev/tty ]; then
     curl -fL --retry 3 --progress-bar "$RELEASES/latest/download/$deb" -o "$TMP/$deb" 2>"$UI" ||
