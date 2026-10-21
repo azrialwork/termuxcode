@@ -28,19 +28,27 @@ case "$version" in
   ;;
 esac
 
-adb shell "$env_prefix $bin_dir/opencode serve --port 4096 >$home_dir/serve.log 2>&1 &" >/dev/null
+# nohup keeps the server alive after the adb shell session ends.
+adb shell "nohup $env_prefix $bin_dir/opencode serve --port 4096 --print-logs >$home_dir/serve.log 2>&1 &" >/dev/null
 adb forward tcp:4096 tcp:4096
 
+listening=0
 code=000
-for _ in $(seq 1 30); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4096/global/health || true)
-  [ "$code" = "200" ] && break
+for _ in $(seq 1 60); do
+  if [ "$listening" = "0" ] && adb shell "grep -q 'server listening' $home_dir/serve.log" 2>/dev/null; then
+    listening=1
+    adb shell cat "$home_dir/serve.log"
+  fi
+  if [ "$listening" = "1" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4096/global/health || true)
+    [ "$code" = "200" ] && break
+  fi
   sleep 2
 done
 
 if [ "$code" != "200" ]; then
   adb shell cat "$home_dir/serve.log" || true
-  echo "health check failed: $code" >&2
+  echo "health check failed: $code (listening=$listening)" >&2
   exit 1
 fi
 
