@@ -343,7 +343,12 @@ jobs:
               context/update-notification.tsx \
               component/dialog-update.tsx \
               terminal-win32.ts \
-              util/path.ts; do
+              util/path.ts \
+              plugin/provider/anthropic.ts \
+              plugin/provider/openai.ts \
+              plugin/github-copilot/index.ts \
+              plugin/cerebras.ts \
+              plugin/xai.ts; do
               case "$modules" in
                 *"$module"*)
                   echo "module still bundled: $module" >&2
