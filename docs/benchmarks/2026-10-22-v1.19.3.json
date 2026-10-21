@@ -1,0 +1,26 @@
+{
+  "device": "M2003J15SC",
+  "android": "12",
+  "version": "1.19.3",
+  "package_bytes": 189017894,
+  "startup_version_ms": 1924,
+  "startup_first_ms": 2963,
+  "startup_tui_ms": 13377,
+  "startup_tui_min": 13369,
+  "startup_tui_max": 13554,
+  "idle_pss_kb": 552427,
+  "idle_rss_kb": 557980,
+  "tui_runs_ms": [
+    "13377",
+    "13369",
+    "13554"
+  ],
+  "pss_runs_kb": [
+    "556984",
+    "552427",
+    "525474"
+  ],
+  "idle_processes": 2,
+  "runs": 3,
+  "idle_seconds": 20
+}

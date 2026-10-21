@@ -126,6 +126,14 @@ CI is the build system. The `build` workflow:
 Local builds are not supported on purpose: the native toolchain and the Bun
 cross-compile target are heavy, and CI is the source of truth.
 
+## Benchmarks
+
+`scripts/measure.sh` measures installed size, startup and idle memory on a real
+device (needs `hyperfine` and `jq`). The baseline for `v1.19.3`, the method and
+its caveats are in [`docs/benchmarks.md`](docs/benchmarks.md). Build profiles live
+in `profiles/`; `profiles/slim.env` carries the size and memory budgets that a
+trimmed build must respect.
+
 ## Limitations
 
 - File watching is disabled. Edits made outside the TUI are not observed until
