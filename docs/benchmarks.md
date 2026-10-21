@@ -73,20 +73,20 @@ once such a release exists.
 
 ## Slim, Termux-only tree
 
-Build `1.19.3+slim1` (run `39687662382`, artifact `package-slim-arm64`), measured
+Build `1.19.3+slim1` (run `39688901845`, artifact `package-slim-arm64`), measured
 from an extracted `.deb` under a throwaway prefix. The patch deletes the
 self-update machinery, managed preferences, every non-Termux branch, and every
 provider except the OpenCode provider instead of stubbing them.
 
 | metric | full | slim |
 | --- | --- | --- |
-| release `.deb` | 47,617,298 B | 46,903,850 B |
+| release `.deb` | 47,617,298 B | 46,903,878 B |
 | installed files | 180.3 MiB | 175.4 MiB |
 | compiled binary | 174,658,760 B | 169,546,952 B |
 | bundle JS | 32,785,765 B | 29,150,240 B |
 
 `--version` from the extracted package prints `1.19.3` in 2.63 s. In an isolated
-`HOME`, `termuxcode models` lists 11 models, all under `opencode`; no other
+`HOME`, `termuxcode models` lists 10-11 models, all under `opencode`; no other
 provider ID appears. TUI startup and idle memory were not re-measured for this
 build.
 
