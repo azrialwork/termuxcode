@@ -179,7 +179,7 @@ jobs:
           mkdir -p "$bundle/bin" "$bundle/lib/termuxcode"
           install -m755 "$GITHUB_WORKSPACE/self/packaging/termuxcode" "$bundle/bin/termuxcode"
           install -m755 "upstream/packages/opencode/dist/opencode-linux-${{ matrix.arch }}-android/bin/opencode" \
-            "$bundle/lib/termuxcode/opencode"
+            "$bundle/lib/termuxcode/termuxcode"
           install -m755 native/libopentui.so "$bundle/lib/termuxcode/libopentui.so"
           install -m755 native/librust_pty.so "$bundle/lib/termuxcode/librust_pty.so"
           bash "$GITHUB_WORKSPACE/self/scripts/package.sh" \
@@ -217,7 +217,7 @@ jobs:
           mkdir -p extract
           tar -xzf pkg/termuxcode-*-${{ matrix.arch }}.tar.gz -C extract
           bash scripts/verify.sh \
-            extract/lib/termuxcode/opencode \
+            extract/lib/termuxcode/termuxcode \
             extract/lib/termuxcode/libopentui.so \
             "${{ matrix.arch }}"
 

@@ -10,7 +10,7 @@ export OPENCODE_DISABLE_FFF=1
 export OPENCODE_DISABLE_AUTOUPDATE=1
 export OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER=1
 
-for file in "$LIBDIR/opencode" "$OPENTUI_LIB_PATH" "$BUN_PTY_LIB"; do
+for file in "$LIBDIR/termuxcode" "$OPENTUI_LIB_PATH" "$BUN_PTY_LIB"; do
   if [ ! -e "$file" ]; then
     echo "termuxcode: missing $file" >&2
     echo "termuxcode: reinstall with 'pkg install --reinstall termuxcode'" >&2
@@ -26,4 +26,4 @@ case "${1:-}" in
     ;;
 esac
 
-exec "$LIBDIR/opencode" "$@"
+exec "$LIBDIR/termuxcode" "$@"

@@ -27,10 +27,18 @@ The package installs:
 
 ```
 $PREFIX/bin/termuxcode                     launcher
-$PREFIX/lib/termuxcode/opencode            compiled OpenCode binary
+$PREFIX/lib/termuxcode/termuxcode          compiled OpenCode binary
 $PREFIX/lib/termuxcode/libopentui.so       TUI renderer (Zig)
 $PREFIX/lib/termuxcode/librust_pty.so      PTY backend (Rust)
 ```
+
+The package owns only those four paths. It never installs `$PREFIX/bin/opencode`,
+so an existing OpenCode installation keeps working next to it. `scripts/package.sh`
+fails the build if the archive contains any other file.
+
+State is shared: `termuxcode` uses the same `~/.config/opencode` and
+`~/.local/share/opencode` directories as upstream OpenCode. Running it can
+migrate that data to `1.19.3`, which an older installed binary may not read.
 
 The launcher exports the paths and Android-safe defaults:
 
@@ -80,7 +88,8 @@ CI is the build system. The `build` workflow:
    16 KB compatible library segments);
 4. boots the x64 build on an Android 28 x86_64 emulator and checks
    `--version` plus `/global/health`;
-5. publishes a Termux `.deb` and tarballs.
+5. publishes a Termux `.deb` and tarballs, asserting the archive contains only
+   the four paths above.
 
 Local builds are not supported on purpose: the native toolchain and the Bun
 cross-compile target are heavy, and CI is the source of truth.

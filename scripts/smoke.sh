@@ -13,12 +13,12 @@ env_prefix="$env_prefix OPENCODE_DISABLE_FFF=1 OPENCODE_DISABLE_AUTOUPDATE=1"
 env_prefix="$env_prefix OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER=1"
 
 adb shell mkdir -p "$bin_dir" "$home_dir"
-adb push "$lib_dir/opencode" "$bin_dir/opencode"
+adb push "$lib_dir/termuxcode" "$bin_dir/termuxcode"
 adb push "$lib_dir/librust_pty.so" "$bin_dir/librust_pty.so"
 adb push "$lib_dir/libopentui.so" "$bin_dir/libopentui.so"
-adb shell chmod 755 "$bin_dir/opencode"
+adb shell chmod 755 "$bin_dir/termuxcode"
 
-version=$(adb shell "$env_prefix $bin_dir/opencode --version")
+version=$(adb shell "$env_prefix $bin_dir/termuxcode --version")
 echo "version: $version"
 case "$version" in
 *"$SMOKE_VERSION"*) ;;
@@ -29,7 +29,7 @@ case "$version" in
 esac
 
 # nohup keeps the server alive after the adb shell session ends.
-adb shell "nohup env $env_prefix $bin_dir/opencode serve --port 4096 --print-logs >$home_dir/serve.log 2>&1 &" >/dev/null
+adb shell "nohup env $env_prefix $bin_dir/termuxcode serve --port 4096 --print-logs >$home_dir/serve.log 2>&1 &" >/dev/null
 adb forward tcp:4096 tcp:4096
 
 # A debug emulator takes minutes to start a 170 MB binary; wait up to 10 minutes.
@@ -58,4 +58,4 @@ if [ "$code" != "200" ]; then
 fi
 
 curl -fsS http://127.0.0.1:4096/global/health
-adb shell pkill -f "opencode serve" || true
+adb shell pkill -f "termuxcode serve" || true
