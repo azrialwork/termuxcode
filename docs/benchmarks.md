@@ -71,6 +71,33 @@ Only a tagged release publishes the slim package. The default `latest` installer
 still selects the full package; `TERMUXCODE_PROFILE=slim` selects the slim one
 once such a release exists.
 
+## Slim after the first trim
+
+Build `1.19.3+slim1` (run `39668526806`, artifact `package-slim-arm64`), measured
+from an extracted `.deb` under a throwaway prefix.
+
+| metric | full | slim |
+| --- | --- | --- |
+| release `.deb` | 47,617,298 B | 47,617,208 B |
+| installed files | 180.3 MiB | 180.3 MiB |
+| compiled binary | 174,658,760 B | 174,658,760 B |
+| bundle JS | 32,783,125 B | 32,773,914 B |
+| `upgrade`/`uninstall` modules | present | absent |
+
+Startup and idle memory were measured twice against the installed full build:
+
+| invocation | slim TUI frame | slim PSS | full TUI frame | full PSS |
+| --- | --- | --- | --- | --- |
+| first | 14.58 s | 461.9 MiB | 14.09 s | 502.6 MiB |
+| second | 14.16 s | 530-698 MiB | 14.55 s | 594-740 MiB |
+
+The first pair suggested a 40 MiB win; the second pair reversed and widened it.
+Idle PSS on this device drifts by more than 40% between invocations, so neither
+pair proves anything about memory. Only the bundle delta is attributable to the
+patch, and it is 9,211 bytes: removing two commands and the non-Termux branches
+does not move the runtime heap, because none of that code is loaded at boot.
+No budget is filled in `profiles/slim.env` until a run can be reproduced.
+
 ## What this says
 
 - The package is dominated by one Bun single-file bundle (166.6 of 180.3 MiB);
@@ -85,8 +112,9 @@ once such a release exists.
 
 - Warm page cache: the package is installed and was just executed. A cold first
   launch after install is slower.
-- GC noise: run-to-run idle PSS varied by roughly 5% (525-557 MiB). Treat these
-  numbers as a baseline, not a specification.
+- GC noise: run-to-run idle PSS varied by roughly 5% (525-557 MiB) inside one
+  session, and by up to 40% across sessions (456-740 MiB). Treat a single A/B as
+  no evidence; alternate the builds over several runs before claiming a delta.
 - Memory scales with terminal size and the project directory. Measured with no
   project open; a large repository with a TUI sidebar will differ.
 - Emulator numbers are invalid here: the shell domain has a different seccomp
