@@ -30,9 +30,10 @@ $PREFIX/bin/termuxcode                     launcher
 $PREFIX/lib/termuxcode/termuxcode          compiled OpenCode binary
 $PREFIX/lib/termuxcode/libopentui.so       TUI renderer (Zig)
 $PREFIX/lib/termuxcode/librust_pty.so      PTY backend (Rust)
+$PREFIX/lib/termuxcode/libtermuxcode-compat.so  close_range shim for Termux
 ```
 
-The package owns only those four paths. It never installs `$PREFIX/bin/opencode`,
+The package owns only those five paths. It never installs `$PREFIX/bin/opencode`,
 so an existing OpenCode installation keeps working next to it. `scripts/package.sh`
 fails the build if the archive contains any other file.
 
@@ -65,6 +66,7 @@ The launcher exports the paths and Android-safe defaults:
 | `OPENCODE_DISABLE_FFF` | `1` | `@ff-labs/fff-bun` has no Android binary; use system `rg` |
 | `OPENCODE_DISABLE_AUTOUPDATE` | `1` | updates are managed by `pkg` |
 | `OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER` | `1` | `@parcel/watcher` has no Android binding |
+| `LD_PRELOAD` | `$PREFIX/lib/termuxcode/libtermuxcode-compat.so` | Termux targets SDK 28, whose seccomp policy traps `close_range` |
 
 `termuxcode upgrade` and `termuxcode uninstall` are refused on purpose. Use
 `pkg upgrade termuxcode` / `pkg uninstall termuxcode`.
@@ -74,15 +76,19 @@ The launcher exports the paths and Android-safe defaults:
 1. `patches/0001-android-build.patch` - adds the two Android targets to
    `packages/opencode/script/build.ts`, selects only them with `--android`, and
    fixes the compile-time defines (`OPENCODE_LIBC=bionic`, no `OPENTUI_LIBC`,
-   no dead glibc FFF binary). The same patch registers the OpenTUI patch in
-   `patchedDependencies`.
-2. `patches/opentui-core-0.4.5-android.patch` - lets `@opentui/core@0.4.5`
-   resolve `libopentui.so` from `OPENTUI_LIB_PATH` on Android instead of
-   throwing `OpenTUI is not supported on the current platform`.
-3. `patches/opentui-build-zig-android.patch` - drops the glibc-only `dl` and
+   no dead glibc FFF binary).
+2. `scripts/patch-opentui.py` - rewrites every installed `@opentui/core@0.4.5`
+   copy so it accepts `android` in its platform table and resolves
+   `libopentui.so` from `OPENTUI_LIB_PATH`. A patch file is not enough:
+   `@opentui/core` is absent from upstream `patchedDependencies`, so a file in
+   `patches/` is silently ignored.
+3. `packaging/close-range-shim.c` - `LD_PRELOAD` shim for Termux's seccomp
+   policy, which traps `close_range` with `SIGSYS` because the app targets SDK
+   28. Emulates the call with a `/proc/self/fd` scan.
+4. `patches/opentui-build-zig-android.patch` - drops the glibc-only `dl` and
    `pthread` link flags for Android and sets 16 KB page alignment, which
    devices with 16 KB pages require.
-4. Native libraries built from source, pinned in `upstream.json`:
+5. Native libraries built from source, pinned in `upstream.json`:
    - `libopentui.so` from OpenTUI `v0.4.5` with Zig 0.15.2, linked against the
      NDK sysroot through a generated libc file.
    - `librust_pty.so` from `bun-pty` `v0.4.8` with the Android NDK, using a
@@ -106,7 +112,7 @@ CI is the build system. The `build` workflow:
    packaged launcher with `TERMUXCODE_HOME` isolation, and checks `--version`,
    `/global/health`, and that no state leaked outside the isolated directory;
 5. publishes a Termux `.deb` and tarballs, asserting the archive contains only
-   the four paths above.
+   the five paths above.
 
 Local builds are not supported on purpose: the native toolchain and the Bun
 cross-compile target are heavy, and CI is the source of truth.
@@ -119,10 +125,16 @@ cross-compile target are heavy, and CI is the source of truth.
   is unavailable on Android.
 - Automatic updates are disabled. The package is the update channel.
 - Only `aarch64` gets a `.deb`; `x64` is produced for emulator verification.
-- The arm64 build is verified as an ELF but has not been run on a physical
-  device yet; runtime smoke tests run on an API 28 x86_64 emulator.
-- Android 10/11 devices may trap `statx` inside Bun and need an `LD_PRELOAD`
-  shim; that path is untested here and out of scope until a device is available.
+- Runtime smoke tests run on an API 28 x86_64 emulator through `adb shell`.
+  That shell runs in Android's `shell` domain, which has a looser seccomp policy
+  than an untrusted app, so the emulator cannot catch seccomp-only failures.
+  Those are verified on an arm64 Android 12 device instead.
+- The `close_range` shim depends on Termux targeting SDK 28: Android ignores
+  `LD_PRELOAD` for apps targeting SDK 29 or newer. If Termux raises its target
+  SDK, both the trap and the workaround change together.
+- Other trapped syscalls beyond `close_range` are not covered yet. If a future
+  Bun release starts using one, the launcher will die with `Bad system call`
+  again; `strace` names the syscall in `si_syscall`.
 
 ## Upstream and license
 

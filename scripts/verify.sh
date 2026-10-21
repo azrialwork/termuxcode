@@ -4,6 +4,7 @@ set -euo pipefail
 bin=${1:?binary}
 lib=${2:?libopentui}
 arch=${3:?arch}
+compat=${4:?compat shim}
 
 test -s "$bin" || { echo "missing binary: $bin"; exit 1; }
 test -s "$lib" || { echo "missing libopentui: $lib"; exit 1; }
@@ -27,6 +28,23 @@ if readelf -d "$bin" 2>/dev/null | grep NEEDED |
   readelf -d "$bin" | grep NEEDED
   exit 1
 fi
+
+grep -aq "OPENTUI_LIB_PATH must point to libopentui.so on Android" "$bin" || {
+  echo "android opentui patch is missing from the bundle"
+  exit 1
+}
+echo "opentui android patch: present"
+
+echo "== $compat"
+readelf -h "$compat" | grep -q "Machine:.*${machine}" || {
+  echo "wrong machine for compat shim"
+  readelf -h "$compat"
+  exit 1
+}
+nm -D "$compat" | grep -Eq ' (close_range|syscall)$' || {
+  echo "compat shim is missing close_range/syscall"
+  exit 1
+}
 
 echo "== $lib"
 readelf -h "$lib" | grep -q "Machine:.*${machine}" || {

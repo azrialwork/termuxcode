@@ -108,6 +108,21 @@ jobs:
             >> bun-pty/rust-pty/Cargo.toml
           cargo build --release --manifest-path bun-pty/rust-pty/Cargo.toml --target "$target"
 
+      - name: Build close_range shim
+        run: |
+          set -euo pipefail
+          mkdir -p native
+          cc="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.rust_target }}28-clang"
+          test -x "$cc"
+          "$cc" -shared -fPIC -O2 -ldl -o native/libtermuxcode-compat.so \
+            "$GITHUB_WORKSPACE/self/packaging/close-range-shim.c"
+          case "${{ matrix.arch }}" in
+            arm64) machine=AArch64 ;;
+            x64) machine=X86-64 ;;
+          esac
+          readelf -h native/libtermuxcode-compat.so | grep -q "Machine:.*$machine"
+          nm -D native/libtermuxcode-compat.so | grep -Eq " (close_range|syscall)$"
+
       - name: Stage libraries
         run: |
           set -euo pipefail
@@ -154,8 +169,6 @@ jobs:
         run: |
           set -euo pipefail
           git -C upstream apply "$GITHUB_WORKSPACE/self/patches/0001-android-build.patch"
-          cp "$GITHUB_WORKSPACE/self/patches/opentui-core-0.4.5-android.patch" \
-            "upstream/patches/@opentui%2Fcore@0.4.5.patch"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -164,6 +177,9 @@ jobs:
       - name: Install dependencies
         working-directory: upstream
         run: bun install
+
+      - name: Patch opentui for Android
+        run: python3 "$GITHUB_WORKSPACE/self/scripts/patch-opentui.py" upstream
 
       - name: Build opencode
         working-directory: upstream/packages/opencode
@@ -182,6 +198,7 @@ jobs:
             "$bundle/lib/termuxcode/termuxcode"
           install -m755 native/libopentui.so "$bundle/lib/termuxcode/libopentui.so"
           install -m755 native/librust_pty.so "$bundle/lib/termuxcode/librust_pty.so"
+          install -m644 native/libtermuxcode-compat.so "$bundle/lib/termuxcode/libtermuxcode-compat.so"
           bash "$GITHUB_WORKSPACE/self/scripts/package.sh" \
             "${{ matrix.arch }}" "$version" "$bundle" "$GITHUB_WORKSPACE/out"
           ls -lh "$GITHUB_WORKSPACE/out"
@@ -219,7 +236,8 @@ jobs:
           bash scripts/verify.sh \
             extract/lib/termuxcode/termuxcode \
             extract/lib/termuxcode/libopentui.so \
-            "${{ matrix.arch }}"
+            "${{ matrix.arch }}" \
+            extract/lib/termuxcode/libtermuxcode-compat.so
 
   smoke:
     name: smoke (android x64 emulator)

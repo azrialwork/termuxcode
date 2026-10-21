@@ -9,6 +9,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 layout="bin/termuxcode
 lib/termuxcode/libopentui.so
+lib/termuxcode/libtermuxcode-compat.so
 lib/termuxcode/librust_pty.so
 lib/termuxcode/termuxcode"
 

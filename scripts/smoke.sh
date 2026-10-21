@@ -19,6 +19,7 @@ adb push "$pkg_dir/bin/termuxcode" "$prefix/bin/termuxcode"
 adb push "$lib_dir/termuxcode" "$prefix/lib/termuxcode/termuxcode"
 adb push "$lib_dir/librust_pty.so" "$prefix/lib/termuxcode/librust_pty.so"
 adb push "$lib_dir/libopentui.so" "$prefix/lib/termuxcode/libopentui.so"
+adb push "$lib_dir/libtermuxcode-compat.so" "$prefix/lib/termuxcode/libtermuxcode-compat.so"
 adb shell chmod 755 "$prefix/bin/termuxcode" "$prefix/lib/termuxcode/termuxcode"
 
 # The launcher's shebang points at Termux; run it through the device shell.
@@ -73,5 +74,19 @@ for leaked in "$home_dir/.config/opencode" "$home_dir/.local/share/opencode"; do
   fi
 done
 echo "isolation: state confined to $debug_home"
+
+# The TUI is the only path that loads libopentui through the JS resolver;
+# --version and serve never reach it.
+if adb shell "command -v script >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1"; then
+  adb shell "timeout 30 script -qec \"$env_prefix sh $prefix/bin/termuxcode\" /dev/null >$home_dir/tui.log 2>&1" || true
+  if adb shell "grep -q 'Failed to initialize OpenTUI' $home_dir/tui.log"; then
+    adb shell cat "$home_dir/tui.log" || true
+    echo "tui failed to load libopentui" >&2
+    exit 1
+  fi
+  echo "tui: render library resolved"
+else
+  echo "tui: skipped (no script/timeout on device)" >&2
+fi
 
 adb shell pkill -f "termuxcode serve" || true
