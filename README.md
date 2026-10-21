@@ -55,9 +55,14 @@ The launcher exports the paths and Android-safe defaults:
 2. `patches/opentui-core-0.4.5-android.patch` - lets `@opentui/core@0.4.5`
    resolve `libopentui.so` from `OPENTUI_LIB_PATH` on Android instead of
    throwing `OpenTUI is not supported on the current platform`.
-3. Native libraries built from source, pinned in `upstream.json`:
-   - `libopentui.so` from OpenTUI `v0.4.5` with Zig 0.15.2.
-   - `librust_pty.so` from `bun-pty` `v0.4.8` with the Android NDK.
+3. `patches/opentui-build-zig-android.patch` - drops the glibc-only `dl` and
+   `pthread` link flags for Android and sets 16 KB page alignment, which
+   devices with 16 KB pages require.
+4. Native libraries built from source, pinned in `upstream.json`:
+   - `libopentui.so` from OpenTUI `v0.4.5` with Zig 0.15.2, linked against the
+     NDK sysroot through a generated libc file.
+   - `librust_pty.so` from `bun-pty` `v0.4.8` with the Android NDK, using a
+     vendored `termios 0.2.2` that accepts `target_os = "android"`.
 
 Everything else is upstream. The upstream checkout is never committed here.
 
@@ -65,9 +70,12 @@ Everything else is upstream. The upstream checkout is never committed here.
 
 CI is the build system. The `build` workflow:
 
-1. builds `libopentui.so` and `librust_pty.so` for `arm64` and `x64`;
+1. builds `libopentui.so` (Zig + NDK libc file) and `librust_pty.so` (Cargo +
+   NDK clang, plus the vendored `termios`) for `arm64` and `x64`;
 2. checks out OpenCode `v1.19.3`, applies the patches, and runs
-   `bun run script/build.ts --android` with Bun `1.4.3`;
+   `bun run script/build.ts --android` with Bun `1.4.3` and
+   `OPENCODE_VERSION=1.19.3` (a detached checkout would otherwise produce a
+   preview version string);
 3. verifies each binary with `readelf` (architecture, no glibc dependencies,
    16 KB compatible library segments);
 4. boots the x64 build on an Android 28 x86_64 emulator and checks
@@ -85,6 +93,10 @@ cross-compile target are heavy, and CI is the source of truth.
   is unavailable on Android.
 - Automatic updates are disabled. The package is the update channel.
 - Only `aarch64` gets a `.deb`; `x64` is produced for emulator verification.
+- The arm64 build is verified as an ELF but has not been run on a physical
+  device yet; runtime smoke tests run on an API 28 x86_64 emulator.
+- Android 10/11 devices may trap `statx` inside Bun and need an `LD_PRELOAD`
+  shim; that path is untested here and out of scope until a device is available.
 
 ## Upstream and license
 
