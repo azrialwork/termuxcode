@@ -73,17 +73,17 @@ once such a release exists.
 
 ## Slim, Termux-only tree
 
-Build `1.19.3+slim1` (run `39674869021`, artifact `package-slim-arm64`), measured
+Build `1.19.3+slim1` (run `39679192560`, artifact `package-slim-arm64`), measured
 from an extracted `.deb` under a throwaway prefix. The patch now deletes the
 self-update machinery, managed preferences, and every non-Termux branch instead
 of stubbing them.
 
 | metric | full | slim |
 | --- | --- | --- |
-| release `.deb` | 47,617,298 B | 47,524,354 B |
+| release `.deb` | 47,617,298 B | 47,525,234 B |
 | installed files | 180.3 MiB | 179.3 MiB |
 | compiled binary | 174,658,760 B | 173,610,184 B |
-| bundle JS | 32,786,201 B | 32,706,591 B |
+| bundle JS | 32,785,795 B | 32,706,185 B |
 
 Startup from the extracted package: `--version` 2.02 s, first output 3.44 s, TUI
 first frame 13.69 s on one warm run, in line with the full build's 13.4-14.6 s
