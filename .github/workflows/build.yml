@@ -100,6 +100,7 @@ jobs:
           linker="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/${target}28-clang"
           test -x "$linker"
           export "CARGO_TARGET_${upper}_LINKER=$linker"
+          export "CARGO_TARGET_${upper}_RUSTFLAGS=--cfg rustix_use_libc"
           cargo build --release --manifest-path bun-pty/rust-pty/Cargo.toml --target "$target"
 
       - name: Stage libraries
