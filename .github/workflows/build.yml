@@ -54,17 +54,21 @@ jobs:
       - name: Patch opentui for Android
         run: git -C opentui apply "$GITHUB_WORKSPACE/self/patches/opentui-build-zig-android.patch"
 
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: ndk;${{ env.NDK_VERSION }}
+
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Build libopentui
         working-directory: opentui/packages/core/src/zig
-        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast
-
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: ndk;${{ env.NDK_VERSION }}
+        run: |
+          set -euo pipefail
+          sysroot="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          test -d "$sysroot"
+          zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast --sysroot "$sysroot"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
