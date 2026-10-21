@@ -17,6 +17,7 @@ permissions:
 env:
   UPSTREAM_REPO: anomalyco/opencode
   UPSTREAM_TAG: v1.19.3
+  UPSTREAM_VERSION: "1.19.3"
   OPENTUI_REPO: anomalyco/opentui
   OPENTUI_TAG: v0.4.5
   BUN_PTY_REPO: sursaone/bun-pty
@@ -166,6 +167,8 @@ jobs:
 
       - name: Build opencode
         working-directory: upstream/packages/opencode
+        env:
+          OPENCODE_VERSION: ${{ env.UPSTREAM_VERSION }}
         run: bun run script/build.ts --android
 
       - name: Package
