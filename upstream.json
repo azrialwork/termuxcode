@@ -1,0 +1,20 @@
+{
+  "opencode": {
+    "repository": "anomalyco/opencode",
+    "tag": "v1.19.3",
+    "commit": "e3c4eb242585dcd77be1a867391b7c25fd47ce52"
+  },
+  "opentui": {
+    "repository": "anomalyco/opentui",
+    "tag": "v0.4.5"
+  },
+  "bun-pty": {
+    "repository": "sursaone/bun-pty",
+    "tag": "v0.4.8"
+  },
+  "toolchain": {
+    "bun": "1.4.3",
+    "zig": "0.15.2",
+    "ndk": "27.2.12479018"
+  }
+}

@@ -1,0 +1,29 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+
+: "${PREFIX:=/data/data/com.termux/files/usr}"
+LIBDIR="$PREFIX/lib/termuxcode"
+
+export OPENTUI_LIB_PATH="$LIBDIR/libopentui.so"
+export BUN_PTY_LIB="$LIBDIR/librust_pty.so"
+export OPENCODE_DISABLE_FFF=1
+export OPENCODE_DISABLE_AUTOUPDATE=1
+export OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER=1
+
+for file in "$LIBDIR/opencode" "$OPENTUI_LIB_PATH" "$BUN_PTY_LIB"; do
+  if [ ! -e "$file" ]; then
+    echo "termuxcode: missing $file" >&2
+    echo "termuxcode: reinstall with 'pkg install --reinstall termuxcode'" >&2
+    exit 1
+  fi
+done
+
+case "${1:-}" in
+  upgrade|uninstall)
+    echo "termuxcode: '$1' is managed by Termux." >&2
+    echo "termuxcode: use 'pkg upgrade termuxcode' or 'pkg uninstall termuxcode'." >&2
+    exit 1
+    ;;
+esac
+
+exec "$LIBDIR/opencode" "$@"

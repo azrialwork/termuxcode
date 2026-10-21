@@ -1,0 +1,12 @@
+Package: termuxcode
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Muhammad Azrial <263097531+azrialwork@users.noreply.github.com>
+Installed-Size: @SIZE@
+Depends: ripgrep, git
+Section: devel
+Priority: optional
+Homepage: https://github.com/azrialwork/termuxcode
+Description: OpenCode built natively for Android
+ OpenCode packaged for Termux with its TUI renderer and PTY backend
+ compiled for Bionic. Updates are managed by the Termux package manager.

@@ -1,0 +1,6 @@
+out/
+dist/
+node_modules/
+*.deb
+*.tar.gz
+.DS_Store

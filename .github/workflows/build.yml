@@ -1,0 +1,281 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: anomalyco/opencode
+  UPSTREAM_TAG: v1.19.3
+  OPENTUI_REPO: anomalyco/opentui
+  OPENTUI_TAG: v0.4.5
+  BUN_PTY_REPO: sursaone/bun-pty
+  BUN_PTY_TAG: v0.4.8
+  BUN_VERSION: 1.4.3
+  ZIG_VERSION: 0.15.2
+  NDK_VERSION: 27.2.12479018
+
+jobs:
+  native:
+    name: native (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            zig_target: aarch64-linux-android
+            rust_target: aarch64-linux-android
+          - arch: x64
+            zig_target: x86_64-linux-android
+            rust_target: x86_64-linux-android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: self
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPENTUI_REPO }}
+          ref: ${{ env.OPENTUI_TAG }}
+          path: opentui
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build libopentui
+        working-directory: opentui/packages/core/src/zig
+        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: ndk;${{ env.NDK_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BUN_PTY_REPO }}
+          ref: ${{ env.BUN_PTY_TAG }}
+          path: bun-pty
+
+      - name: Build librust_pty
+        run: |
+          set -euo pipefail
+          target="${{ matrix.rust_target }}"
+          upper=$(echo "$target" | tr 'a-z-' 'A-Z_')
+          linker="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/${target}28-clang"
+          test -x "$linker"
+          export "CARGO_TARGET_${upper}_LINKER=$linker"
+          cargo build --release --manifest-path bun-pty/rust-pty/Cargo.toml --target "$target"
+
+      - name: Stage libraries
+        run: |
+          set -euo pipefail
+          mkdir -p native
+          cp "opentui/packages/core/src/zig/lib/${{ matrix.zig_target }}/libopentui.so" native/
+          cp "bun-pty/rust-pty/target/${{ matrix.rust_target }}/release/librust_pty.so" native/
+          file native/*.so
+          readelf -dW native/libopentui.so | grep NEEDED || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.arch }}
+          path: native/*.so
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.arch }})
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+          - arch: x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: self
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_TAG }}
+          path: upstream
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.arch }}
+          path: native
+
+      - name: Apply android delta
+        run: |
+          set -euo pipefail
+          git -C upstream apply "$GITHUB_WORKSPACE/self/patches/0001-android-build.patch"
+          cp "$GITHUB_WORKSPACE/self/patches/opentui-core-0.4.5-android.patch" \
+            "upstream/patches/@opentui%2Fcore@0.4.5.patch"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        working-directory: upstream
+        run: bun install
+
+      - name: Build opencode
+        working-directory: upstream/packages/opencode
+        run: bun run script/build.ts --android
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${UPSTREAM_TAG#v}"
+          bundle="$RUNNER_TEMP/bundle"
+          mkdir -p "$bundle/bin" "$bundle/lib/termuxcode"
+          install -m755 "$GITHUB_WORKSPACE/self/packaging/termuxcode" "$bundle/bin/termuxcode"
+          install -m755 "upstream/packages/opencode/dist/opencode-linux-${{ matrix.arch }}-android/bin/opencode" \
+            "$bundle/lib/termuxcode/opencode"
+          install -m755 native/libopentui.so "$bundle/lib/termuxcode/libopentui.so"
+          install -m755 native/librust_pty.so "$bundle/lib/termuxcode/librust_pty.so"
+          bash "$GITHUB_WORKSPACE/self/scripts/package.sh" \
+            "${{ matrix.arch }}" "$version" "$bundle" "$GITHUB_WORKSPACE/out"
+          ls -lh "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  verify:
+    name: verify (${{ matrix.arch }})
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+          - arch: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-${{ matrix.arch }}
+          path: pkg
+
+      - name: Verify ELF
+        run: |
+          set -euo pipefail
+          mkdir -p extract
+          tar -xzf pkg/termuxcode-*-${{ matrix.arch }}.tar.gz -C extract
+          bash scripts/verify.sh \
+            extract/lib/termuxcode/opencode \
+            extract/lib/termuxcode/libopentui.so \
+            "${{ matrix.arch }}"
+
+  smoke:
+    name: smoke (android x64 emulator)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-x64
+          path: pkg
+
+      - name: Extract
+        run: |
+          set -euo pipefail
+          mkdir -p extract
+          tar -xzf pkg/termuxcode-*-x64.tar.gz -C extract
+
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 28
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -noaudio
+          script: |
+            set -euo pipefail
+            adb push extract/lib/termuxcode/opencode /data/local/tmp/opencode
+            adb push extract/lib/termuxcode/librust_pty.so /data/local/tmp/librust_pty.so
+            adb push extract/lib/termuxcode/libopentui.so /data/local/tmp/libopentui.so
+            adb shell chmod 755 /data/local/tmp/opencode
+
+            version=$(adb shell "HOME=/data/local/tmp BUN_PTY_LIB=/data/local/tmp/librust_pty.so /data/local/tmp/opencode --version")
+            echo "version: $version"
+            echo "$version" | grep -q "1.19.3"
+
+            adb shell "HOME=/data/local/tmp BUN_PTY_LIB=/data/local/tmp/librust_pty.so /data/local/tmp/opencode serve --port 4096 >/data/local/tmp/serve.log 2>&1" &
+            server_pid=$!
+            adb forward tcp:4096 tcp:4096
+            code=000
+            for _ in $(seq 1 30); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4096/global/health || true)
+              [ "$code" = "200" ] && break
+              sleep 2
+            done
+            if [ "$code" != "200" ]; then
+              adb shell cat /data/local/tmp/serve.log || true
+              echo "health check failed: $code"
+              kill "$server_pid" 2>/dev/null || true
+              exit 1
+            fi
+            curl -fsS http://127.0.0.1:4096/global/health
+            kill "$server_pid" 2>/dev/null || true
+
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, verify, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: packages
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd packages
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" packages/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "termuxcode $GITHUB_REF_NAME" \
+            --generate-notes
