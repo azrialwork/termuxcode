@@ -50,6 +50,20 @@ Raw output of the baseline run: [`2026-10-22-v1.19.3.json`](2026-10-22-v1.19.3.j
 | idle RSS, whole tree | 544.9 MiB |
 | idle processes | 2 |
 
+## Build profiles
+
+`profiles/full.env` and `profiles/slim.env` are the single place where a profile
+is defined. The workflow builds both from the same upstream checkout and patches,
+and names artifacts after the profile (`package-full`, `package-slim`,
+`metafile-slim-arm64`, ...). `slim` is not trimmed yet: its only difference is the
+package version suffix `+slim1`, and the verify job asserts that the slim and
+full binaries are byte-identical. That is the point: the pipe is proven neutral
+before anything is removed.
+
+Only a tagged release publishes the slim package. The default `latest` installer
+still selects the full package; `TERMUXCODE_PROFILE=slim` selects the slim one
+once such a release exists.
+
 ## What this says
 
 - The package is dominated by one Bun single-file bundle (166.6 of 180.3 MiB);

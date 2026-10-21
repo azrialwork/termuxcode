@@ -1,0 +1,41 @@
+--- a/packages/opencode/script/build.ts
++++ b/packages/opencode/script/build.ts
+@@ -148,6 +148,11 @@
+ 
+ await $`rm -rf dist`
+ 
++// Optional bundle map for size work: OPENCODE_METAFILE_DIR=<dir> writes one
++// esbuild-style metafile per target. Unset in normal builds.
++const metafileDir = process.env.OPENCODE_METAFILE_DIR
++if (metafileDir) await $`mkdir -p ${metafileDir}`
++
+ const binaries: Record<string, string> = {}
+ if (!skipInstall && !androidFlag) {
+   await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
+@@ -172,13 +177,14 @@
+   const treeSitterWorkerPath = "opentui-tree-sitter-worker.js"
+   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
+ 
+-  await Bun.build({
++  const result = await Bun.build({
+     conditions: ["bun", "node"],
+     tsconfig: "./tsconfig.json",
+     plugins: [plugin],
+     external: ["node-gyp"],
+     format: "esm",
+     minify: true,
++    metafile: Boolean(metafileDir),
+     sourcemap: sourcemapsFlag ? "linked" : "none",
+     splitting: true,
+     compile: {
+@@ -213,6 +219,10 @@
+     },
+   })
+ 
++  if (metafileDir && result.metafile) {
++    await Bun.write(`${metafileDir}/${name}.json`, JSON.stringify(result.metafile))
++  }
++
+   // Embedding the bundle invalidates the linker's ad-hoc signature, and macOS 27+
+   // SIGKILLs binaries with invalid pages. Re-sign ad-hoc; release CI re-signs with Developer ID.
+   if (item.os === "darwin" && process.platform === "darwin") {

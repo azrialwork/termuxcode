@@ -139,7 +139,7 @@ jobs:
           if-no-files-found: error
 
   build:
-    name: build (${{ matrix.arch }})
+    name: build (${{ matrix.profile }}, ${{ matrix.arch }})
     needs: native
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -147,8 +147,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: arm64
-          - arch: x64
+          - profile: full
+            arch: arm64
+          - profile: full
+            arch: x64
+          - profile: slim
+            arch: arm64
+          - profile: slim
+            arch: x64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -165,10 +171,21 @@ jobs:
           name: native-${{ matrix.arch }}
           path: native
 
+      - name: Load profile
+        id: profile
+        run: |
+          set -euo pipefail
+          set -a
+          . "$GITHUB_WORKSPACE/self/profiles/${{ matrix.profile }}.env"
+          set +a
+          echo "suffix=${PACKAGE_VERSION_SUFFIX}" >> "$GITHUB_OUTPUT"
+
       - name: Apply android delta
         run: |
           set -euo pipefail
-          git -C upstream apply "$GITHUB_WORKSPACE/self/patches/0001-android-build.patch"
+          git -C upstream apply \
+            "$GITHUB_WORKSPACE/self/patches/0001-android-build.patch" \
+            "$GITHUB_WORKSPACE/self/patches/0002-bundle-metafile.patch"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -185,7 +202,15 @@ jobs:
         working-directory: upstream/packages/opencode
         env:
           OPENCODE_VERSION: ${{ env.UPSTREAM_VERSION }}
+          OPENCODE_METAFILE_DIR: ${{ github.workspace }}/metafile
         run: bun run script/build.ts --android
+
+      - name: Upload bundle map
+        uses: actions/upload-artifact@v4
+        with:
+          name: metafile-${{ matrix.profile }}-${{ matrix.arch }}
+          path: metafile/opencode-linux-${{ matrix.arch }}-android.json
+          if-no-files-found: error
 
       - name: Package
         run: |
@@ -200,17 +225,18 @@ jobs:
           install -m755 native/librust_pty.so "$bundle/lib/termuxcode/librust_pty.so"
           install -m644 native/libtermuxcode-compat.so "$bundle/lib/termuxcode/libtermuxcode-compat.so"
           bash "$GITHUB_WORKSPACE/self/scripts/package.sh" \
-            "${{ matrix.arch }}" "$version" "$bundle" "$GITHUB_WORKSPACE/out"
+            "${{ matrix.arch }}" "$version" "$bundle" "$GITHUB_WORKSPACE/out" \
+            "${{ steps.profile.outputs.suffix }}"
           ls -lh "$GITHUB_WORKSPACE/out"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: package-${{ matrix.arch }}
+          name: package-${{ matrix.profile }}-${{ matrix.arch }}
           path: out/*
           if-no-files-found: error
 
   verify:
-    name: verify (${{ matrix.arch }})
+    name: verify (${{ matrix.profile }}, ${{ matrix.arch }})
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -218,15 +244,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: arm64
-          - arch: x64
+          - profile: full
+            arch: arm64
+          - profile: full
+            arch: x64
+          - profile: slim
+            arch: arm64
+          - profile: slim
+            arch: x64
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
-          name: package-${{ matrix.arch }}
+          name: package-${{ matrix.profile }}-${{ matrix.arch }}
           path: pkg
+
+      - uses: actions/download-artifact@v4
+        if: matrix.profile == 'slim'
+        with:
+          name: package-full-${{ matrix.arch }}
+          path: full
 
       - name: Verify ELF
         run: |
@@ -238,6 +276,43 @@ jobs:
             extract/lib/termuxcode/libopentui.so \
             "${{ matrix.arch }}" \
             extract/lib/termuxcode/libtermuxcode-compat.so
+
+      - name: Compare with full
+        if: matrix.profile == 'slim'
+        run: |
+          set -euo pipefail
+          mkdir -p expected
+          tar -xzf full/termuxcode-*-${{ matrix.arch }}.tar.gz -C expected
+          # Nothing is trimmed yet, so the two profiles must produce the same
+          # binary. If this fails, the profile plumbing changed the build.
+          cmp extract/lib/termuxcode/termuxcode expected/lib/termuxcode/termuxcode
+          echo "slim and full binaries are identical"
+
+      - name: Check profile metadata
+        if: matrix.arch == 'arm64'
+        run: |
+          set -euo pipefail
+          version=$(dpkg-deb -f pkg/*.deb Version)
+          echo "package version: $version"
+          case "${{ matrix.profile }}" in
+            full) [ "${version%%+*}" = "$version" ] ;;
+            slim) case "$version" in *+slim*) : ;; *) exit 1 ;; esac ;;
+          esac
+
+      - name: Fetch bundle map
+        uses: actions/download-artifact@v4
+        with:
+          name: metafile-${{ matrix.profile }}-${{ matrix.arch }}
+          path: meta
+
+      - name: Check bundle map
+        run: |
+          set -euo pipefail
+          file=$(ls meta/*.json)
+          count=$(jq '.inputs | length' "$file")
+          bytes=$(jq '[.outputs | to_entries[] | .value.bytes] | add' "$file")
+          test "$count" -gt 0
+          echo "modules=$count bytes=$bytes" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: release

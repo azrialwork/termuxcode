@@ -13,6 +13,7 @@ set -euo pipefail
 REPO="${TERMUXCODE_REPO:-azrialwork/termuxcode}"
 RELEASES="https://github.com/${REPO}/releases"
 FORCE="${TERMUXCODE_FORCE:-0}"
+PROFILE="${TERMUXCODE_PROFILE:-full}"
 
 # ---------------------------------------------------------------- ui --------
 
@@ -148,8 +149,12 @@ step_ok 01 "Environment" "Termux, ${arch}, $((free_kb / 1024 / 1024)) GB free"
 curl -fsSL --retry 3 "$RELEASES/latest/download/SHA256SUMS" -o "$TMP/SHA256SUMS" ||
   die "Could not fetch SHA256SUMS" "Check the network, then retry."
 
-deb=$(awk '{print $2}' "$TMP/SHA256SUMS" | grep -E '_aarch64\.deb$' | head -1 || true)
-[ -n "$deb" ] || die "No aarch64 package in the latest release."
+case "$PROFILE" in
+  full) deb=$(awk '{print $2}' "$TMP/SHA256SUMS" | grep -E '_aarch64\.deb$' | grep -v '+' | head -1 || true) ;;
+  slim) deb=$(awk '{print $2}' "$TMP/SHA256SUMS" | grep -E '\+slim[0-9]+_aarch64\.deb$' | head -1 || true) ;;
+  *) die "Unknown TERMUXCODE_PROFILE: $PROFILE" "Use full or slim." ;;
+esac
+[ -n "$deb" ] || die "No aarch64 package for profile ${PROFILE}."
 
 version=$(printf '%s' "$deb" | sed -E 's/^termuxcode_(.+)_aarch64\.deb$/\1/')
 step_ok 02 "Release" "v${version}"
@@ -229,9 +234,10 @@ fi
 # --------------------------------------------------------------- verify ----
 
 doctor="$TMP/doctor"
+expected=${version%%+*}
 out=$(TERMUXCODE_HOME="$doctor" timeout 90 "$PREFIX/bin/termuxcode" --version 2>/dev/null || true)
-[ "$out" = "$version" ] || die "termuxcode did not start" "Expected $version, got '${out:-no output}'."
-step_ok 06 "Verify" "launcher reports ${version}"
+[ "$out" = "$expected" ] || die "termuxcode did not start" "Expected $expected, got '${out:-no output}'."
+step_ok 06 "Verify" "launcher reports ${expected}"
 
 if [ -n "$opencode_before" ]; then
   opencode_after=$(sha256sum "$PREFIX/bin/opencode" | awk '{print $1}')

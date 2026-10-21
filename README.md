@@ -134,6 +134,11 @@ its caveats are in [`docs/benchmarks.md`](docs/benchmarks.md). Build profiles li
 in `profiles/`; `profiles/slim.env` carries the size and memory budgets that a
 trimmed build must respect.
 
+Both profiles are built from the same upstream tree and patch series, and every
+build uploads a Bun bundle map (`metafile-<profile>-<arch>`) that lists every
+module and its bytes. The slim profile currently differs only in its package
+version (`+slim1`): nothing is trimmed until the measurements justify it.
+
 ## Limitations
 
 - File watching is disabled. Edits made outside the TUI are not observed until
