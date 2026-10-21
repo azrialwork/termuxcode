@@ -60,6 +60,10 @@ package version suffix `+slim1`, and the verify job asserts that the slim and
 full binaries are byte-identical. That is the point: the pipe is proven neutral
 before anything is removed.
 
+The first profile run (`39662040825`, commit `3c83776`) passed that check: the
+`arm64` binaries were byte-identical, so the plumbing does not alter the build.
+The bundle it produced is broken down in [`bundle-map.md`](bundle-map.md).
+
 Only a tagged release publishes the slim package. The default `latest` installer
 still selects the full package; `TERMUXCODE_PROFILE=slim` selects the slim one
 once such a release exists.
