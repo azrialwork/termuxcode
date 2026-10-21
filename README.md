@@ -17,6 +17,20 @@ target, and two native libraries are built from their pinned sources.
 ## Install (Termux, aarch64)
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/azrialwork/termuxcode/main/install.sh | bash
+termuxcode
+```
+
+The installer checks the architecture and free space, downloads the latest
+`aarch64` package, verifies its SHA-256 against the release's `SHA256SUMS`,
+installs it with `dpkg`, then starts the launcher once to confirm it works. It
+records the hash of `$PREFIX/bin/opencode` before installing and fails if that
+file changed. Re-running it updates in place; `TERMUXCODE_FORCE=1` reinstalls the
+current version.
+
+Manual install, if you prefer:
+
+```sh
 pkg install ripgrep git
 curl -LO https://github.com/azrialwork/termuxcode/releases/latest/download/termuxcode_1.19.3_aarch64.deb
 pkg install ./termuxcode_1.19.3_aarch64.deb
