@@ -291,10 +291,13 @@ jobs:
           set -euo pipefail
           mkdir -p expected
           tar -xzf full/termuxcode-*-${{ matrix.arch }}.tar.gz -C expected
-          # Nothing is trimmed yet, so the two profiles must produce the same
-          # binary. If this fails, the profile plumbing changed the build.
-          cmp extract/lib/termuxcode/termuxcode expected/lib/termuxcode/termuxcode
-          echo "slim and full binaries are identical"
+          slim=extract/data/data/com.termux/files/usr/lib/termuxcode/termuxcode
+          full=expected/lib/termuxcode/termuxcode
+          slim_bytes=$(stat -c %s "$slim")
+          full_bytes=$(stat -c %s "$full")
+          echo "slim=$slim_bytes full=$full_bytes"
+          # Removing code must never make the slim binary bigger.
+          [ "$slim_bytes" -lt "$full_bytes" ]
 
       - name: Check profile metadata
         if: matrix.arch == 'arm64'
@@ -320,6 +323,15 @@ jobs:
           count=$(jq '.inputs | length' "$file")
           bytes=$(jq '[.outputs | to_entries[] | .value.bytes] | add' "$file")
           test "$count" -gt 0
+          if [ "${{ matrix.profile }}" = "slim" ]; then
+            for module in cli/cmd/uninstall.ts cli/cmd/upgrade.ts; do
+              if jq -r '.inputs | keys[]' "$file" | grep -q "$module"; then
+                echo "module still bundled: $module" >&2
+                exit 1
+              fi
+            done
+            jq -r '.inputs | keys[]' "$file" | grep -q 'cli/cmd/tui.ts'
+          fi
           echo "modules=$count bytes=$bytes" >> "$GITHUB_STEP_SUMMARY"
 
   release:
