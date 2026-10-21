@@ -9,10 +9,10 @@ target, and two native libraries are built from their pinned sources.
 
 ## Status
 
-- Targets: `bun-linux-arm64-android` (primary, Termux) and `bun-linux-x64-android` (CI smoke test).
+- Targets: `bun-linux-arm64-android` (primary, Termux) and `bun-linux-x64-android` (ELF verification only).
 - Runtime: the official Bun Android build for the target ABI.
 - Packages: `.deb` for Termux (`aarch64`) plus a portable tarball per architecture.
-- CI: every push builds, verifies the ELF, and boots the x64 build in an Android emulator.
+- CI: every push builds and verifies both ELFs; runtime is tested on a real device.
 
 ## Install (Termux, aarch64)
 
@@ -53,9 +53,7 @@ TERMUXCODE_HOME=$PREFIX/var/termuxcode-debug termuxcode
 The launcher creates that directory and points `XDG_CONFIG_HOME`,
 `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` and `TMPDIR` at it, so the
 run cannot read or migrate state used by another OpenCode installation. Auth is
-isolated too, so log in again inside the debug directory. CI runs the smoke test
-through the packaged launcher with this variable set and fails if anything
-leaks into the real `HOME`.
+isolated too, so log in again inside the debug directory.
 
 The launcher exports the paths and Android-safe defaults:
 
@@ -108,10 +106,7 @@ CI is the build system. The `build` workflow:
    preview version string);
 3. verifies each binary with `readelf` (architecture, no glibc dependencies,
    16 KB compatible library segments);
-4. boots the x64 build on an Android 28 x86_64 emulator, runs it through the
-   packaged launcher with `TERMUXCODE_HOME` isolation, and checks `--version`,
-   `/global/health`, and that no state leaked outside the isolated directory;
-5. publishes a Termux `.deb` and tarballs, asserting the archive contains only
+4. publishes a Termux `.deb` and tarballs, asserting the archive contains only
    the five paths above.
 
 Local builds are not supported on purpose: the native toolchain and the Bun
@@ -124,11 +119,13 @@ cross-compile target are heavy, and CI is the source of truth.
 - Ripgrep search requires the Termux `ripgrep` package; the bundled FFF backend
   is unavailable on Android.
 - Automatic updates are disabled. The package is the update channel.
-- Only `aarch64` gets a `.deb`; `x64` is produced for emulator verification.
-- Runtime smoke tests run on an API 28 x86_64 emulator through `adb shell`.
-  That shell runs in Android's `shell` domain, which has a looser seccomp policy
-  than an untrusted app, so the emulator cannot catch seccomp-only failures.
-  Those are verified on an arm64 Android 12 device instead.
+- Only `aarch64` gets a `.deb`; `x64` is produced for ELF verification only.
+- There is no automated runtime test. A shell on an emulator runs in Android's
+  `shell` domain, which has a looser seccomp policy than an untrusted app, so it
+  cannot catch seccomp-only failures; and packaging a full Android app harness
+  is out of scope. Runtime behavior is verified by hand on an arm64 Android 12
+  Termux device (`aarch64`, API 31), including the TUI, the server health
+  endpoint and the isolated debug state.
 - The `close_range` shim depends on Termux targeting SDK 28: Android ignores
   `LD_PRELOAD` for apps targeting SDK 29 or newer. If Termux raises its target
   SDK, both the trap and the workaround change together.
