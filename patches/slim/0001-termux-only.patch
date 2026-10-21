@@ -1,3 +1,1060 @@
+diff --git a/bun.lock b/bun.lock
+index 1d832f5..2889bea 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -352,7 +352,6 @@
+         "mime-types": "3.0.2",
+         "minimatch": "10.2.5",
+         "npm-package-arg": "13.0.2",
+-        "open": "11.0.4",
+         "semver": "^7.6.3",
+         "turndown": "7.2.0",
+         "venice-ai-sdk-provider": "2.1.1",
+@@ -1083,7 +1082,6 @@
+     "@opentui/solid": "catalog:",
+     "@types/bun": "catalog:",
+     "@types/node": "catalog:",
+-    "open": "11.0.4",
+   },
+   "catalog": {
+     "@cloudflare/workers-types": "4.20251008.0",
+diff --git a/package.json b/package.json
+index 003e39a..0a2b8c9 100644
+--- a/package.json
++++ b/package.json
+@@ -142,8 +142,7 @@
+     "@opentui/keymap": "catalog:",
+     "@opentui/solid": "catalog:",
+     "@types/bun": "catalog:",
+-    "@types/node": "catalog:",
+-    "open": "11.0.4"
++    "@types/node": "catalog:"
+   },
+   "patchedDependencies": {
+     "@dnd-kit/dom@0.5.0": "patches/@dnd-kit%2Fdom@0.5.0.patch",
+diff --git a/packages/core/package.json b/packages/core/package.json
+index e259c61..73efc04 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -119,7 +119,6 @@
+     "mime-types": "3.0.2",
+     "minimatch": "10.2.5",
+     "npm-package-arg": "13.0.2",
+-    "open": "11.0.4",
+     "semver": "^7.6.3",
+     "turndown": "7.2.0",
+     "venice-ai-sdk-provider": "2.1.1",
+diff --git a/packages/core/src/cross-spawn-spawner.ts b/packages/core/src/cross-spawn-spawner.ts
+index 6ea9022..72e7557 100644
+--- a/packages/core/src/cross-spawn-spawner.ts
++++ b/packages/core/src/cross-spawn-spawner.ts
+@@ -151,17 +151,15 @@ export const make = Effect.gen(function* () {
+     serr: ChildProcess.StderrConfig,
+     extra: ReadonlyArray<{ fd: number; config: ChildProcess.AdditionalFdConfig }>,
+   ): NodeChildProcess.StdioOptions => {
+-    const pipe = (x: NodeChildProcess.IOType | undefined) =>
+-      process.platform === "win32" && x === "pipe" ? "overlapped" : x
+     const arr: Array<NodeChildProcess.IOType | undefined> = [
+-      pipe(input(sin.stream)),
+-      pipe(output(sout.stream)),
+-      pipe(output(serr.stream)),
++      input(sin.stream),
++      output(sout.stream),
++      output(serr.stream),
+     ]
+     if (extra.length === 0) return arr as NodeChildProcess.StdioOptions
+     const max = extra.reduce((acc, x) => Math.max(acc, x.fd), 2)
+     for (let i = 3; i <= max; i++) arr[i] = "ignore"
+-    for (const x of extra) arr[x.fd] = pipe("pipe")
++    for (const x of extra) arr[x.fd] = "pipe"
+     return arr as NodeChildProcess.StdioOptions
+   }
+ 
+@@ -294,15 +292,6 @@ export const make = Effect.gen(function* () {
+     proc: NodeChildProcess.ChildProcess,
+     signal: NodeJS.Signals,
+   ) => {
+-    if (globalThis.process.platform === "win32") {
+-      return Effect.callback<void, PlatformError.PlatformError>((resume) => {
+-        NodeChildProcess.exec(`taskkill /pid ${proc.pid} /T /F`, { windowsHide: true }, (err) => {
+-          if (err) return resume(Effect.fail(toPlatformError("kill", toError(err), command)))
+-          resume(Effect.void)
+-        })
+-      })
+-    }
+-
+     return Effect.try({
+       try: () => {
+         globalThis.process.kill(-proc.pid!, signal)
+@@ -375,16 +364,14 @@ export const make = Effect.gen(function* () {
+               cwd: dir,
+               env: env(command.options),
+               stdio: stdios(sin, sout, serr, extra),
+-              detached: command.options.detached ?? process.platform !== "win32",
++              detached: command.options.detached ?? true,
+               shell: command.options.shell,
+-              windowsHide: process.platform === "win32",
+             }),
+             Effect.fnUntraced(function* ([proc, signal]) {
+               const done = yield* Deferred.isDone(signal)
+               const kill = timeout(proc, command, command.options)
+               if (done) {
+                 const [code] = yield* Deferred.await(signal)
+-                if (process.platform === "win32") return yield* Effect.void
+                 if (code !== 0 && Predicate.isNotNull(code)) return yield* Effect.ignore(kill(killGroup))
+                 return yield* Effect.void
+               }
+diff --git a/packages/core/src/database/path.ts b/packages/core/src/database/path.ts
+index 379d5f8..d5c3c05 100644
+--- a/packages/core/src/database/path.ts
++++ b/packages/core/src/database/path.ts
+@@ -2,26 +2,11 @@ import nodePath from "path"
+ import { customType } from "drizzle-orm/sqlite-core"
+ import { AbsolutePath } from "../schema"
+ 
+-function storagePath(input: string) {
+-  if (process.platform !== "win32") return input
+-  return input.replaceAll("\\", "/")
+-}
+-
+-function isWindowsStoragePath(input: string) {
+-  return /^[A-Za-z]:\//.test(input) || input.startsWith("//")
+-}
+-
+ function absolute(input: string) {
+-  const result = storagePath(input)
+-  if (!nodePath.posix.isAbsolute(result) && !(process.platform === "win32" && isWindowsStoragePath(result))) {
++  if (!nodePath.posix.isAbsolute(input)) {
+     throw new Error(`Path is not absolute: ${input}`)
+   }
+-  return result
+-}
+-
+-function toPlatform(input: string) {
+-  if (process.platform !== "win32" || !isWindowsStoragePath(input)) return input
+-  return input.replaceAll("/", "\\")
++  return input
+ }
+ 
+ export const absoluteColumn = customType<{
+@@ -36,7 +21,7 @@ export const absoluteColumn = customType<{
+     return absolute(input)
+   },
+   fromDriver(input) {
+-    return AbsolutePath.make(toPlatform(absolute(input)))
++    return AbsolutePath.make(absolute(input))
+   },
+ })
+ 
+@@ -54,7 +39,7 @@ export const directoryColumn = customType<{
+     return input ? absolute(input) : input
+   },
+   fromDriver(input) {
+-    return input ? toPlatform(absolute(input)) : input
++    return input ? absolute(input) : input
+   },
+ })
+ 
+@@ -67,10 +52,10 @@ export const pathColumn = customType<{
+     return "text"
+   },
+   toDriver(input) {
+-    return storagePath(input)
++    return input
+   },
+   fromDriver(input) {
+-    return storagePath(input)
++    return input
+   },
+ })
+ 
+@@ -86,6 +71,6 @@ export const absoluteArrayColumn = customType<{
+     return JSON.stringify(input.map(absolute))
+   },
+   fromDriver(input) {
+-    return (JSON.parse(input) as string[]).map((item) => AbsolutePath.make(toPlatform(absolute(item))))
++    return (JSON.parse(input) as string[]).map((item) => AbsolutePath.make(absolute(item)))
+   },
+ })
+diff --git a/packages/core/src/filesystem/protected.ts b/packages/core/src/filesystem/protected.ts
+index a7646df..dee80af 100644
+--- a/packages/core/src/filesystem/protected.ts
++++ b/packages/core/src/filesystem/protected.ts
+@@ -1,52 +1,10 @@
+-import os from "os"
+-import path from "path"
+-
+-const home = os.homedir()
+-
+-const DARWIN_HOME = [
+-  "Music",
+-  "Pictures",
+-  "Movies",
+-  "Downloads",
+-  "Desktop",
+-  "Documents",
+-  "Public",
+-  "Applications",
+-  "Library",
+-]
+-
+-const DARWIN_LIBRARY = [
+-  "Application Support/AddressBook",
+-  "Calendars",
+-  "Mail",
+-  "Messages",
+-  "Safari",
+-  "Cookies",
+-  "Application Support/com.apple.TCC",
+-  "PersonalizationPortrait",
+-  "Metadata/CoreSpotlight",
+-  "Suggestions",
+-]
+-
+-const DARWIN_ROOT = ["/.DocumentRevisions-V100", "/.Spotlight-V100", "/.Trashes", "/.fseventsd"]
+-const WIN32_HOME = ["AppData", "Downloads", "Desktop", "Documents", "Pictures", "Music", "Videos", "OneDrive"]
+-
+ /** Directory basenames to skip when scanning the home directory. */
+ export function names(): ReadonlySet<string> {
+-  if (process.platform === "darwin") return new Set(DARWIN_HOME)
+-  if (process.platform === "win32") return new Set(WIN32_HOME)
+   return new Set()
+ }
+ 
+ /** Absolute paths that should never be watched, stated, or scanned. */
+ export function paths(): string[] {
+-  if (process.platform === "darwin")
+-    return [
+-      ...DARWIN_HOME.map((name) => path.join(home, name)),
+-      ...DARWIN_LIBRARY.map((name) => path.join(home, "Library", name)),
+-      ...DARWIN_ROOT,
+-    ]
+-  if (process.platform === "win32") return WIN32_HOME.map((name) => path.join(home, name))
+   return []
+ }
+ 
+diff --git a/packages/core/src/filesystem/watcher.ts b/packages/core/src/filesystem/watcher.ts
+index c5e2063..e9cdea8 100644
+--- a/packages/core/src/filesystem/watcher.ts
++++ b/packages/core/src/filesystem/watcher.ts
+@@ -26,9 +26,7 @@ export const Event = FileSystemWatcher.Event
+ const watcher = lazy((): typeof import("@parcel/watcher") | undefined => {
+   try {
+     const libc = typeof OPENCODE_LIBC === "undefined" ? undefined : OPENCODE_LIBC
+-    const binding = require(
+-      `@parcel/watcher-${process.platform}-${process.arch}${process.platform === "linux" ? `-${libc || "glibc"}` : ""}`,
+-    )
++    const binding = require(`@parcel/watcher-linux-${process.arch}-${libc || "glibc"}`)
+     return createWrapper(binding) as typeof import("@parcel/watcher")
+   } catch {
+     return
+@@ -36,9 +34,7 @@ const watcher = lazy((): typeof import("@parcel/watcher") | undefined => {
+ })
+ 
+ function getBackend() {
+-  if (process.platform === "win32") return "windows"
+-  if (process.platform === "darwin") return "fs-events"
+-  if (process.platform === "linux") return "inotify"
++  return "inotify"
+ }
+ 
+ function protecteds(dir: string) {
+@@ -64,7 +60,7 @@ const layer = Layer.effect(
+     if (!backend) {
+       yield* Effect.logError("watcher backend not supported", {
+         directory: location.directory,
+-        platform: process.platform,
++        platform: "android",
+       })
+       return Service.of({})
+     }
+@@ -72,7 +68,7 @@ const layer = Layer.effect(
+     const w = watcher()
+     if (!w) return Service.of({})
+ 
+-    yield* Effect.logInfo("watcher backend", { directory: location.directory, platform: process.platform, backend })
++    yield* Effect.logInfo("watcher backend", { directory: location.directory, platform: "android", backend })
+     const events = yield* EventV2.Service
+     const fs = yield* FSUtil.Service
+     const git = yield* Git.Service
+diff --git a/packages/core/src/flag/flag.ts b/packages/core/src/flag/flag.ts
+index a0eb78a..d075391 100644
+--- a/packages/core/src/flag/flag.ts
++++ b/packages/core/src/flag/flag.ts
+@@ -31,7 +31,7 @@ export const Flag = {
+   OPENCODE_FAKE_VCS: process.env["OPENCODE_FAKE_VCS"],
+   OPENCODE_SERVER_PASSWORD: process.env["OPENCODE_SERVER_PASSWORD"],
+   OPENCODE_SERVER_USERNAME: process.env["OPENCODE_SERVER_USERNAME"],
+-  OPENCODE_DISABLE_FFF: fff === undefined ? process.platform === "win32" : truthy("OPENCODE_DISABLE_FFF"),
++  OPENCODE_DISABLE_FFF: truthy("OPENCODE_DISABLE_FFF"),
+ 
+   // Experimental
+   OPENCODE_EXPERIMENTAL_FILEWATCHER: Config.boolean("OPENCODE_EXPERIMENTAL_FILEWATCHER").pipe(
+@@ -40,8 +40,7 @@ export const Flag = {
+   OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: Config.boolean("OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER").pipe(
+     Config.withDefault(false),
+   ),
+-  OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT:
+-    copy === undefined ? process.platform === "win32" : truthy("OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"),
++  OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT: truthy("OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"),
+   OPENCODE_MODELS_URL: process.env["OPENCODE_MODELS_URL"],
+   OPENCODE_MODELS_PATH: process.env["OPENCODE_MODELS_PATH"],
+   OPENCODE_DB: process.env["OPENCODE_DB"],
+diff --git a/packages/core/src/fs-util.ts b/packages/core/src/fs-util.ts
+index 93a551c..5bdb086 100644
+--- a/packages/core/src/fs-util.ts
++++ b/packages/core/src/fs-util.ts
+@@ -92,7 +92,7 @@ export namespace FSUtil {
+       })
+ 
+       const resolve = Effect.fn("FileSystem.resolve")(function* (path: string) {
+-        const resolved = pathResolve(windowsPath(path))
++        const resolved = pathResolve(path)
+         return yield* fs.realPath(resolved).pipe(
+           Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(resolved)),
+           Effect.orDie,
+@@ -115,8 +115,7 @@ export namespace FSUtil {
+ 
+       const ensureDir = Effect.fn("FileSystem.ensureDir")(function* (path: string) {
+         yield* fs.makeDirectory(path, { recursive: true }).pipe(
+-          // Bun on Windows can throw EEXIST here despite recursive mode.
+-          // https://github.com/oven-sh/bun/issues/21901
++          // Bun can report AlreadyExists for recursive mkdir.
+           Effect.catchIf(
+             (error) => error.reason._tag === "AlreadyExists",
+             (error) => isDir(path).pipe(Effect.flatMap((exists) => (exists ? Effect.void : Effect.fail(error)))),
+@@ -225,44 +224,16 @@ export namespace FSUtil {
+     return lookup(p) || "application/octet-stream"
+   }
+ 
+-  export function normalizePath(p: string): string {
+-    if (process.platform !== "win32") return p
+-    const resolved = pathResolve(windowsPath(p))
+-    try {
+-      return realpathSync.native(resolved)
+-    } catch {
+-      return resolved
+-    }
+-  }
+-
+-  export function normalizePathPattern(p: string): string {
+-    if (process.platform !== "win32") return p
+-    if (p === "*") return p
+-    const match = p.match(/^(.*)[\\/]\*$/)
+-    if (!match) return normalizePath(p)
+-    const dir = /^[A-Za-z]:$/.test(match[1]) ? match[1] + "\\" : match[1]
+-    return join(normalizePath(dir), "*")
+-  }
+-
+   export function resolve(p: string): string {
+-    const resolved = pathResolve(windowsPath(p))
++    const resolved = pathResolve(p)
+     try {
+-      return normalizePath(realpathSync(resolved))
++      return realpathSync(resolved)
+     } catch (e: any) {
+-      if (e?.code === "ENOENT") return normalizePath(resolved)
++      if (e?.code === "ENOENT") return resolved
+       throw e
+     }
+   }
+ 
+-  export function windowsPath(p: string): string {
+-    if (process.platform !== "win32") return p
+-    return p
+-      .replace(/^\/([a-zA-Z]):(?:[\\/]|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      .replace(/^\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      .replace(/^\/cygdrive\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-      .replace(/^\/mnt\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
+-  }
+-
+   export function overlaps(a: string, b: string) {
+     return contains(a, b) || contains(b, a)
+   }
+diff --git a/packages/core/src/git.ts b/packages/core/src/git.ts
+index 19dcde8..fc43485 100644
+--- a/packages/core/src/git.ts
++++ b/packages/core/src/git.ts
+@@ -981,7 +981,6 @@ function execute(cwd: string, proc: AppProcess.Interface) {
+ function resolvePath(cwd: string, value: string) {
+   const trimmed = value.replace(/[\r\n]+$/, "")
+   if (!trimmed) return cwd
+-  const normalized = FSUtil.windowsPath(trimmed)
+-  if (path.isAbsolute(normalized)) return path.normalize(normalized)
+-  return path.resolve(cwd, normalized)
++  if (path.isAbsolute(trimmed)) return path.normalize(trimmed)
++  return path.resolve(cwd, trimmed)
+ }
+diff --git a/packages/core/src/npm-config.ts b/packages/core/src/npm-config.ts
+index 896bb84..eb516f3 100644
+--- a/packages/core/src/npm-config.ts
++++ b/packages/core/src/npm-config.ts
+@@ -18,7 +18,7 @@ export const load = (dir: string) =>
+         env: { ...process.env },
+         argv: [process.execPath, process.execPath],
+         execPath: process.execPath,
+-        platform: process.platform,
++        platform: "linux",
+         definitions,
+         flatten,
+         nerfDarts,
+diff --git a/packages/core/src/npm.ts b/packages/core/src/npm.ts
+index 94e573d..4264063 100644
+--- a/packages/core/src/npm.ts
++++ b/packages/core/src/npm.ts
+@@ -42,11 +42,8 @@ export interface Interface {
+ 
+ export class Service extends Context.Service<Service, Interface>()("@opencode/Npm") {}
+ 
+-const illegal = process.platform === "win32" ? new Set(["<", ">", ":", '"', "|", "?", "*"]) : undefined
+-
+ export function sanitize(pkg: string) {
+-  if (!illegal) return pkg
+-  return Array.from(pkg, (char) => (illegal.has(char) || char.charCodeAt(0) < 32 ? "_" : char)).join("")
++  return pkg
+ }
+ 
+ const resolveEntryPoint = (name: string, dir: string): EntryPoint => {
+diff --git a/packages/core/src/open.ts b/packages/core/src/open.ts
+index 296982f..09103d0 100644
+--- a/packages/core/src/open.ts
++++ b/packages/core/src/open.ts
+@@ -1,8 +1,8 @@
+-import open from "open"
++import { spawn } from "child_process"
+ 
+ export function openUrl(input: string) {
+   const url = URL.canParse(input) ? new URL(input) : undefined
+   if (!url || (url.protocol !== "http:" && url.protocol !== "https:"))
+     return Promise.reject(new Error(`Only http and https links can be opened in the browser: ${input}`))
+-  return open(url.href)
++  return Promise.resolve(spawn("xdg-open", [url.href], { stdio: "ignore", detached: true }))
+ }
+diff --git a/packages/core/src/pty.ts b/packages/core/src/pty.ts
+index e5be4d4..a202631 100644
+--- a/packages/core/src/pty.ts
++++ b/packages/core/src/pty.ts
+@@ -173,11 +173,6 @@ const layer = Layer.effect(
+         TERM: "xterm-256color",
+         OPENCODE_TERMINAL: "1",
+       } as Record<string, string>
+-      if (process.platform === "win32") {
+-        env.LC_ALL = "C.UTF-8"
+-        env.LC_CTYPE = "C.UTF-8"
+-        env.LANG = "C.UTF-8"
+-      }
+       yield* Effect.logInfo("creating session", { id, cmd: command, args, cwd })
+       const { spawn } = yield* Effect.promise(() => pty())
+       const proc = yield* Effect.sync(() => spawn(command, args, { name: "xterm-256color", cwd, env }))
+diff --git a/packages/core/src/pty/pty.node.ts b/packages/core/src/pty/pty.node.ts
+index 54691d1..76f415f 100644
+--- a/packages/core/src/pty/pty.node.ts
++++ b/packages/core/src/pty/pty.node.ts
+@@ -4,10 +4,7 @@ import type { Opts, Proc } from "./pty"
+ export type { Disp, Exit, Opts, Proc } from "./pty"
+ 
+ export function spawn(file: string, args: string[], opts: Opts): Proc {
+-  const proc = pty.spawn(file, args, {
+-    ...opts,
+-    ...(process.platform === "win32" ? { useConptyDll: true } : {}),
+-  })
++  const proc = pty.spawn(file, args, opts)
+   return {
+     pid: proc.pid,
+     onData(listener) {
+diff --git a/packages/core/src/ripgrep/binary.ts b/packages/core/src/ripgrep/binary.ts
+index 762a8e6..22592c6 100644
+--- a/packages/core/src/ripgrep/binary.ts
++++ b/packages/core/src/ripgrep/binary.ts
+@@ -1,27 +1,9 @@
+-import path from "path"
+-import { Context, Effect, Layer, Stream } from "effect"
+-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
+-import { ChildProcess } from "effect/unstable/process"
+-import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+-import { CrossSpawnSpawner } from "../cross-spawn-spawner"
++import { Context, Effect, Layer } from "effect"
+ import { makeGlobalNode } from "../effect/app-node"
+-import { httpClient } from "../effect/app-node-platform"
+ import { FSUtil } from "../fs-util"
+-import { Global } from "../global"
+ import { which } from "../util/which"
+ 
+ export namespace RipgrepBinary {
+-  const VERSION = "15.1.0"
+-  const PLATFORM = {
+-    "arm64-darwin": { platform: "aarch64-apple-darwin", extension: "tar.gz" },
+-    "arm64-linux": { platform: "aarch64-unknown-linux-gnu", extension: "tar.gz" },
+-    "x64-darwin": { platform: "x86_64-apple-darwin", extension: "tar.gz" },
+-    "x64-linux": { platform: "x86_64-unknown-linux-musl", extension: "tar.gz" },
+-    "arm64-win32": { platform: "aarch64-pc-windows-msvc", extension: "zip" },
+-    "ia32-win32": { platform: "i686-pc-windows-msvc", extension: "zip" },
+-    "x64-win32": { platform: "x86_64-pc-windows-msvc", extension: "zip" },
+-  } as const
+-
+   interface Interface {
+     readonly filepath: Effect.Effect<string, Error>
+   }
+@@ -32,92 +14,13 @@ export namespace RipgrepBinary {
+     Service,
+     Effect.gen(function* () {
+       const fs = yield* FSUtil.Service
+-      const http = HttpClient.filterStatusOk(yield* HttpClient.HttpClient)
+-      const spawner = yield* ChildProcessSpawner
+-
+-      const run = Effect.fnUntraced(function* (command: string, args: string[]) {
+-        const handle = yield* spawner.spawn(ChildProcess.make(command, args, { extendEnv: true, stdin: "ignore" }))
+-        const [stdout, stderr, code] = yield* Effect.all(
+-          [
+-            Stream.mkString(Stream.decodeText(handle.stdout)),
+-            Stream.mkString(Stream.decodeText(handle.stderr)),
+-            handle.exitCode,
+-          ],
+-          { concurrency: "unbounded" },
+-        )
+-        return { stdout, stderr, code }
+-      }, Effect.scoped)
+-
+-      const extract = Effect.fnUntraced(function* (
+-        archive: string,
+-        config: (typeof PLATFORM)[keyof typeof PLATFORM],
+-        target: string,
+-      ) {
+-        const dir = yield* fs.makeTempDirectoryScoped({ directory: Global.Path.bin, prefix: "ripgrep-" })
+-
+-        if (config.extension === "zip") {
+-          const shell = (yield* Effect.sync(() => which("powershell.exe") ?? which("pwsh.exe"))) ?? "powershell.exe"
+-          const result = yield* run(shell, [
+-            "-NoProfile",
+-            "-NonInteractive",
+-            "-Command",
+-            `$global:ProgressPreference = 'SilentlyContinue'; Expand-Archive -LiteralPath '${archive.replaceAll("'", "''")}' -DestinationPath '${dir.replaceAll("'", "''")}' -Force`,
+-          ])
+-          if (result.code !== 0)
+-            throw new Error(
+-              result.stderr.trim() || result.stdout.trim() || `ripgrep extraction failed with code ${result.code}`,
+-            )
+-        }
+-
+-        if (config.extension === "tar.gz") {
+-          const result = yield* run("tar", ["-xzf", archive, "-C", dir])
+-          if (result.code !== 0)
+-            throw new Error(
+-              result.stderr.trim() || result.stdout.trim() || `ripgrep extraction failed with code ${result.code}`,
+-            )
+-        }
+-
+-        const extracted = path.join(
+-          dir,
+-          `ripgrep-${VERSION}-${config.platform}`,
+-          process.platform === "win32" ? "rg.exe" : "rg",
+-        )
+-        if (!(yield* fs.isFile(extracted))) throw new Error(`ripgrep archive did not contain executable: ${extracted}`)
+-
+-        yield* fs.copyFile(extracted, target)
+-        if (process.platform !== "win32") yield* fs.chmod(target, 0o755)
+-      }, Effect.scoped)
+ 
+       return Service.of({
+         filepath: yield* Effect.cached(
+           Effect.gen(function* () {
+-            const system = yield* Effect.sync(() => which(process.platform === "win32" ? "rg.exe" : "rg"))
++            const system = yield* Effect.sync(() => which("rg"))
+             if (system && (yield* fs.isFile(system).pipe(Effect.orDie))) return system
+-
+-            const target = path.join(Global.Path.bin, `rg${process.platform === "win32" ? ".exe" : ""}`)
+-            if (yield* fs.isFile(target).pipe(Effect.orDie)) return target
+-
+-            const platformKey = `${process.arch}-${process.platform}` as keyof typeof PLATFORM
+-            const config = PLATFORM[platformKey]
+-            if (!config) throw new Error(`unsupported platform for ripgrep: ${platformKey}`)
+-
+-            const filename = `ripgrep-${VERSION}-${config.platform}.${config.extension}`
+-            const url = `https://github.com/BurntSushi/ripgrep/releases/download/${VERSION}/${filename}`
+-            const archive = path.join(Global.Path.bin, filename)
+-
+-            yield* Effect.logInfo("downloading ripgrep", { url })
+-            yield* fs.ensureDir(Global.Path.bin).pipe(Effect.orDie)
+-            const bytes = yield* HttpClientRequest.get(url).pipe(
+-              http.execute,
+-              Effect.flatMap((response) => response.arrayBuffer),
+-              Effect.mapError((cause) => (cause instanceof Error ? cause : new Error(String(cause)))),
+-            )
+-            if (bytes.byteLength === 0) throw new Error(`failed to download ripgrep from ${url}`)
+-
+-            yield* fs.writeWithDirs(archive, new Uint8Array(bytes))
+-            yield* extract(archive, config, target)
+-            yield* fs.remove(archive, { force: true }).pipe(Effect.ignore)
+-            return target
++            throw new Error("ripgrep not found on PATH; install it with: pkg install ripgrep")
+           }),
+         ),
+       })
+@@ -127,6 +30,6 @@ export namespace RipgrepBinary {
+   export const node = makeGlobalNode({
+     service: Service,
+     layer: layer,
+-    deps: [FSUtil.node, httpClient, CrossSpawnSpawner.node],
++    deps: [FSUtil.node],
+   })
+ }
+diff --git a/packages/core/src/shell.ts b/packages/core/src/shell.ts
+index 2908910..74b9494 100644
+--- a/packages/core/src/shell.ts
++++ b/packages/core/src/shell.ts
+@@ -1,23 +1,19 @@
+ export * as Shell from "./shell"
+ 
+ import path from "path"
+-import { spawn, type ChildProcess } from "child_process"
++import type { ChildProcess } from "child_process"
+ import { readFile } from "fs/promises"
+ import { statSync } from "fs"
+ import { setTimeout as sleep } from "node:timers/promises"
+-import { Flag } from "./flag/flag"
+-import { FSUtil } from "./fs-util"
+ import { which } from "./util/which"
+ 
+ const SIGKILL_TIMEOUT_MS = 200
+-const META: Record<string, { deny?: boolean; login?: boolean; posix?: boolean; ps?: boolean }> = {
++const META: Record<string, { deny?: boolean; login?: boolean; posix?: boolean }> = {
+   bash: { login: true, posix: true },
+   dash: { login: true, posix: true },
+   fish: { deny: true, login: true },
+   ksh: { login: true, posix: true },
+   nu: { deny: true },
+-  powershell: { ps: true },
+-  pwsh: { ps: true },
+   sh: { login: true, posix: true },
+   zsh: { login: true, posix: true },
+ }
+@@ -32,18 +28,6 @@ export async function killTree(proc: ChildProcess, opts?: { exited?: () => boole
+   const pid = proc.pid
+   if (!pid || opts?.exited?.()) return
+ 
+-  if (process.platform === "win32") {
+-    await new Promise<void>((resolve) => {
+-      const killer = spawn("taskkill", ["/pid", String(pid), "/f", "/t"], {
+-        stdio: "ignore",
+-        windowsHide: true,
+-      })
+-      killer.once("exit", () => resolve())
+-      killer.once("error", () => resolve())
+-    })
+-    return
+-  }
+-
+   try {
+     process.kill(-pid, "SIGTERM")
+     await sleep(SIGKILL_TIMEOUT_MS)
+@@ -63,17 +47,6 @@ function stat(file: string) {
+   return statSync(file, { throwIfNoEntry: false }) ?? undefined
+ }
+ 
+-function full(file: string) {
+-  if (process.platform !== "win32") return file
+-  const shell = FSUtil.windowsPath(file)
+-  if (path.win32.dirname(shell) !== ".") {
+-    if (shell.startsWith("/") && name(shell) === "bash") return gitbash() || shell
+-    return shell
+-  }
+-  if (name(shell) === "bash") return gitbash() || which(shell) || shell
+-  return which(shell) || shell
+-}
+-
+ function meta(file: string) {
+   return META[name(file)]
+ }
+@@ -82,33 +55,18 @@ function ok(file: string) {
+   return meta(file)?.deny !== true
+ }
+ 
+-function rooted(file: string) {
+-  return path.isAbsolute(FSUtil.windowsPath(file))
+-}
+-
+ function resolve(file: string) {
+-  const shell = full(file)
+-  if (rooted(shell)) {
+-    if (stat(shell)?.isFile()) return shell
++  if (path.isAbsolute(file)) {
++    if (stat(file)?.isFile()) return file
+     return
+   }
+-  return which(shell) ?? undefined
+-}
+-
+-function win() {
+-  return Array.from(
+-    new Set(
+-      [which("pwsh"), which("powershell"), gitbash(), process.env.COMSPEC || "cmd.exe"]
+-        .filter((item): item is string => Boolean(item))
+-        .map(full),
+-    ),
+-  )
++  return which(file) ?? undefined
+ }
+ 
+ async function unix() {
+   const text = await readFile("/etc/shells", "utf8").catch(() => "")
+   if (text) return Array.from(new Set(text.split("\n").filter((line) => line.trim() && !line.startsWith("#"))))
+-  return ["/bin/bash", "/bin/zsh", "/bin/sh"]
++  return ["/bin/bash", "/bin/sh"]
+ }
+ 
+ function select(file: string | undefined, opts?: { acceptable?: boolean }) {
+@@ -116,28 +74,16 @@ function select(file: string | undefined, opts?: { acceptable?: boolean }) {
+     const shell = resolve(file)
+     if (shell) return shell
+   }
+-  if (process.platform === "win32") return win()[0]
+   return fallback()
+ }
+ 
+-export function gitbash() {
+-  if (process.platform !== "win32") return
+-  if (Flag.OPENCODE_GIT_BASH_PATH) return Flag.OPENCODE_GIT_BASH_PATH
+-  const git = which("git")
+-  if (!git) return
+-  const file = path.join(git, "..", "..", "bin", "bash.exe")
+-  if (stat(file)?.size) return file
+-}
+-
+ function fallback() {
+-  if (process.platform === "darwin") return "/bin/zsh"
+   const bash = which("bash")
+   if (bash) return bash
+   return "/bin/sh"
+ }
+ 
+ export function name(file: string) {
+-  if (process.platform === "win32") return path.win32.parse(FSUtil.windowsPath(file)).name.toLowerCase()
+   return path.basename(file).toLowerCase()
+ }
+ 
+@@ -149,17 +95,12 @@ export function posix(file: string) {
+   return meta(file)?.posix === true
+ }
+ 
+-export function ps(file: string) {
+-  return meta(file)?.ps === true
+-}
+-
+ function info(file: string): Item {
+-  const item = full(file)
+-  const n = name(item)
++  const n = name(file)
+   return {
+-    path: item,
+-    name: resolve(n) ? n : item,
+-    acceptable: ok(item),
++    path: file,
++    name: resolve(n) ? n : file,
++    acceptable: ok(file),
+   }
+ }
+ 
+@@ -194,8 +135,6 @@ export function args(file: string, command: string, cwd: string) {
+       cwd,
+     ]
+   }
+-  if (n === "cmd") return ["/c", command]
+-  if (ps(file)) return ["-NoProfile", "-Command", command]
+   return ["-c", command]
+ }
+ 
+@@ -221,6 +160,6 @@ acceptable.reset = () => {
+ }
+ 
+ export async function list(): Promise<Item[]> {
+-  const shells = process.platform === "win32" ? win() : await unix()
++  const shells = await unix()
+   return shells.filter((s) => resolve(s)).map(info)
+ }
+diff --git a/packages/core/src/skill/discovery.ts b/packages/core/src/skill/discovery.ts
+index a192ba1..4a7d7b3 100644
+--- a/packages/core/src/skill/discovery.ts
++++ b/packages/core/src/skill/discovery.ts
+@@ -33,7 +33,6 @@ function isSafeRelativePath(value: string) {
+     !value.includes("#") &&
+     !URL.canParse(value) &&
+     !path.posix.isAbsolute(value) &&
+-    !path.win32.isAbsolute(value) &&
+     segments.every((segment) => {
+       try {
+         const decoded = decodeURIComponent(segment)
+diff --git a/packages/core/src/system-context/builtins.ts b/packages/core/src/system-context/builtins.ts
+index b8b5057..4105c3c 100644
+--- a/packages/core/src/system-context/builtins.ts
++++ b/packages/core/src/system-context/builtins.ts
+@@ -18,7 +18,7 @@ const builtIns = Layer.effectDiscard(
+       `  Working directory: ${location.directory}`,
+       `  Workspace root folder: ${location.project.directory}`,
+       `  Is directory a git repo: ${location.vcs?.type === "git" ? "yes" : "no"}`,
+-      `  Platform: ${process.platform}`,
++      `  Platform: android`,
+       "</env>",
+     ].join("\n")
+     const context = SystemContext.combine([
+diff --git a/packages/core/src/tool/bash.ts b/packages/core/src/tool/bash.ts
+index 2242376..45ea85a 100644
+--- a/packages/core/src/tool/bash.ts
++++ b/packages/core/src/tool/bash.ts
+@@ -46,7 +46,7 @@ const Output = Schema.Struct({
+ 
+ type Output = typeof Output.Type
+ 
+-const defaultShell = () => (process.platform === "win32" ? (process.env.COMSPEC ?? "cmd.exe") : "/bin/sh")
++const defaultShell = () => "/bin/sh"
+ 
+ const modelOutput = (output: Output) => {
+   const warnings = output.warnings?.length
+@@ -66,7 +66,6 @@ const isTimeout = (error: AppProcess.AppProcessError) =>
+ // TODO: Port tree-sitter bash / PowerShell parser-based approval reduction.
+ // TODO: Port BashArity reusable command-prefix approvals.
+ // TODO: Replace token-based command-argument external-directory advisories with parser-based detection.
+-// TODO: Restore PowerShell and cmd-specific invocation/path handling on Windows.
+ // TODO: Add plugin shell.env environment augmentation once V2 plugin hooks exist.
+ // TODO: Add durable/live progress metadata streaming for long-running commands once V2 tool invocation progress context is wired.
+ // TODO: Persist background job status and define restart recovery before exposing remote observation.
+@@ -106,7 +105,7 @@ const layer = Layer.effectDiscard(
+     yield* tools
+       .register({
+         [name]: Tool.make({
+-          description: `Execute one shell command string with the host user's filesystem, process, and network authority. The active Location is the default working directory. Relative workdir values resolve from that Location. External workdir values require external_directory approval; best-effort command-argument path warnings are advisory only. Timeout values are milliseconds (default: ${DEFAULT_TIMEOUT_MS}; maximum: ${MAX_TIMEOUT_MS}). Uses the configured shell when set; otherwise uses /bin/sh on POSIX and COMSPEC or cmd.exe on Windows.`,
++          description: `Execute one shell command string with the host user's filesystem, process, and network authority. The active Location is the default working directory. Relative workdir values resolve from that Location. External workdir values require external_directory approval; best-effort command-argument path warnings are advisory only. Timeout values are milliseconds (default: ${DEFAULT_TIMEOUT_MS}; maximum: ${MAX_TIMEOUT_MS}). Uses the configured shell when set; otherwise uses /bin/sh.`,
+           input: Input,
+           output: Output,
+           structured: StructuredOutput,
+@@ -159,7 +158,7 @@ const layer = Layer.effectDiscard(
+                 cwd: target.canonical,
+                 shell,
+                 stdin: "ignore",
+-                detached: process.platform !== "win32",
++                detached: true,
+                 forceKillAfter: Duration.seconds(3),
+               })
+               const timeout = input.timeout ?? DEFAULT_TIMEOUT_MS
+diff --git a/packages/core/src/tool/read-filesystem.ts b/packages/core/src/tool/read-filesystem.ts
+index e325a83..3004924 100644
+--- a/packages/core/src/tool/read-filesystem.ts
++++ b/packages/core/src/tool/read-filesystem.ts
+@@ -106,8 +106,6 @@ const extensions = new Set([
+   ".zip",
+   ".tar",
+   ".gz",
+-  ".exe",
+-  ".dll",
+   ".so",
+   ".class",
+   ".jar",
+diff --git a/packages/core/src/util/wildcard.ts b/packages/core/src/util/wildcard.ts
+index 0a67817..270c1cd 100644
+--- a/packages/core/src/util/wildcard.ts
++++ b/packages/core/src/util/wildcard.ts
+@@ -10,5 +10,5 @@ export function match(input: string, pattern: string) {
+ 
+   if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
+ 
+-  return new RegExp("^" + escaped + "$", process.platform === "win32" ? "si" : "s").test(normalized)
++  return new RegExp("^" + escaped + "$", "s").test(normalized)
+ }
+diff --git a/packages/opencode/src/cli/cmd/github.handler.ts b/packages/opencode/src/cli/cmd/github.handler.ts
+index e990a3c..b1a5ad1 100644
+--- a/packages/opencode/src/cli/cmd/github.handler.ts
++++ b/packages/opencode/src/cli/cmd/github.handler.ts
+@@ -286,12 +286,7 @@ export const githubInstall = Effect.fn("Cli.github.install")(function* () {
+ 
+         // Open browser
+         const url = "https://github.com/apps/opencode-agent"
+-        const command =
+-          process.platform === "darwin"
+-            ? `open "${url}"`
+-            : process.platform === "win32"
+-              ? `start "" "${url}"`
+-              : `xdg-open "${url}"`
++        const command = `xdg-open "${url}"`
+ 
+         exec(command, (error) => {
+           if (error) {
+diff --git a/packages/opencode/src/cli/cmd/run/runtime.boot.ts b/packages/opencode/src/cli/cmd/run/runtime.boot.ts
+index b1f6217..fac90fe 100644
+--- a/packages/opencode/src/cli/cmd/run/runtime.boot.ts
++++ b/packages/opencode/src/cli/cmd/run/runtime.boot.ts
+@@ -68,7 +68,7 @@ function emptySessionInfo(): SessionInfo {
+ 
+ function defaultRunTuiConfig(): RunTuiConfig {
+   return {
+-    ...resolve({}, { terminalSuspend: process.platform !== "win32" }),
++    ...resolve({}, { terminalSuspend: true }),
+     diff_style: "auto",
+   }
+ }
+diff --git a/packages/opencode/src/cli/cmd/run/runtime.lifecycle.ts b/packages/opencode/src/cli/cmd/run/runtime.lifecycle.ts
+index 4644d3d..03c033d 100644
+--- a/packages/opencode/src/cli/cmd/run/runtime.lifecycle.ts
++++ b/packages/opencode/src/cli/cmd/run/runtime.lifecycle.ts
+@@ -186,7 +186,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
+       autoFocus: false,
+       openConsoleOnError: false,
+       exitOnCtrlC: false,
+-      useKittyKeyboard: { events: process.platform === "win32" },
++      useKittyKeyboard: { events: false },
+       screenMode: "split-footer",
+       footerHeight: FOOTER_HEIGHT,
+       externalOutputMode: "capture-stdout",
+diff --git a/packages/opencode/src/cli/cmd/run/runtime.stdin.ts b/packages/opencode/src/cli/cmd/run/runtime.stdin.ts
+index d236fb0..a45c574 100644
+--- a/packages/opencode/src/cli/cmd/run/runtime.stdin.ts
++++ b/packages/opencode/src/cli/cmd/run/runtime.stdin.ts
+@@ -15,16 +15,13 @@ function openTerminalStdin(path: string): NodeJS.ReadStream {
+ export function resolveInteractiveStdin(
+   stdin: NodeJS.ReadStream = process.stdin,
+   open: (path: string) => NodeJS.ReadStream = openTerminalStdin,
+-  platform = process.platform,
+ ): InteractiveStdin {
+   if (stdin.isTTY) {
+     return { stdin }
+   }
+ 
+-  const file = platform === "win32" ? "CONIN$" : "/dev/tty"
+-
+   try {
+-    const stream = open(file)
++    const stream = open("/dev/tty")
+     return {
+       stdin: stream,
+       cleanup: () => {
+diff --git a/packages/opencode/src/cli/cmd/session.ts b/packages/opencode/src/cli/cmd/session.ts
+index 9e6ddda..80b5d99 100644
+--- a/packages/opencode/src/cli/cmd/session.ts
++++ b/packages/opencode/src/cli/cmd/session.ts
+@@ -6,39 +6,12 @@ import { Session } from "@/session/session"
+ import { SessionID } from "../../session/schema"
+ import { UI } from "../ui"
+ import { Locale } from "@/util/locale"
+-import { Flag } from "@opencode-ai/core/flag/flag"
+-import { Filesystem } from "@/util/filesystem"
+ import { Process } from "@/util/process"
+ import { NotFoundError } from "@/storage/storage"
+ import { EOL } from "os"
+-import path from "path"
+-import { which } from "@opencode-ai/core/util/which"
+ 
+ function pagerCmd(): string[] {
+-  const lessOptions = ["-R", "-S"]
+-  if (process.platform !== "win32") {
+-    return ["less", ...lessOptions]
+-  }
+-
+-  // user could have less installed via other options
+-  const lessOnPath = which("less")
+-  if (lessOnPath) {
+-    if (Filesystem.stat(lessOnPath)?.size) return [lessOnPath, ...lessOptions]
+-  }
+-
+-  if (Flag.OPENCODE_GIT_BASH_PATH) {
+-    const less = path.join(Flag.OPENCODE_GIT_BASH_PATH, "..", "..", "usr", "bin", "less.exe")
+-    if (Filesystem.stat(less)?.size) return [less, ...lessOptions]
+-  }
+-
+-  const git = which("git")
+-  if (git) {
+-    const less = path.join(git, "..", "..", "usr", "bin", "less.exe")
+-    if (Filesystem.stat(less)?.size) return [less, ...lessOptions]
+-  }
+-
+-  // Fall back to Windows built-in more (via cmd.exe)
+-  return ["cmd", "/c", "more"]
++  return ["less", "-R", "-S"]
+ }
+ 
+ export const SessionCommand = cmd({
+diff --git a/packages/opencode/src/cli/cmd/tui.ts b/packages/opencode/src/cli/cmd/tui.ts
+index 3a837ba..1dd9417 100644
+--- a/packages/opencode/src/cli/cmd/tui.ts
++++ b/packages/opencode/src/cli/cmd/tui.ts
+@@ -10,12 +10,9 @@ import { withNetworkOptions, resolveNetworkOptionsNoConfig, hasArg } from "@/cli
+ import { Filesystem } from "@/util/filesystem"
+ import type { GlobalEvent } from "@opencode-ai/sdk/v2"
+ import type { EventSource } from "@opencode-ai/tui/context/sdk"
+-import type { UpdateNotice, UpdateSource } from "@opencode-ai/tui"
+-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+ import { writeHeapSnapshot } from "v8"
+ import { ServerAuth } from "@/server/auth"
+ import { validateSession } from "../tui/validate-session"
+-import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+ 
+ declare global {
+   const OPENCODE_WORKER_PATH: string
+@@ -51,43 +48,6 @@ function createEventSource(client: RpcClient): EventSource {
+   }
+ }
+ 
+-// Mirrors the V2 CLI updater: the TUI process checks every 10 minutes and installs on this machine,
+-// but only when the user picks an option in the /update dialog.
+-function createUpdater(latest: () => Promise<UpdateNotice | undefined>): UpdateSource {
+-  const listeners = new Set<(notice: UpdateNotice) => void>()
+-  let current: UpdateNotice | undefined
+-  const check = () =>
+-    latest()
+-      .then((notice) => {
+-        if (!notice || JSON.stringify(notice) === JSON.stringify(current)) return
+-        current = notice
+-        listeners.forEach((notify) => notify(notice))
+-      })
+-      .catch(() => {})
+-  setTimeout(check, 1000).unref?.()
+-  setInterval(check, 10 * 60 * 1000).unref?.()
+-  return {
+-    subscribe: (notify) => {
+-      if (current) notify(current)
+-      listeners.add(notify)
+-      return () => listeners.delete(notify)
+-    },
+-    check: async () => {
+-      const { Installation } = await import("@/installation")
+-      // A failed check leaves latest unset, which /update reports as "Couldn't check for updates."
+-      const latest = await Installation.latest(await Installation.method()).catch(() => undefined)
+-      return { current: InstallationVersion, latest }
+-    },
+-    apply: async (target) => {
+-      const { Installation } = await import("@/installation")
+-      const method = await Installation.method()
+-      if (method === "unknown") throw new Error("Installation method not found")
+-      if (target.type === "major") return Installation.upgradeMajor(method)
+-      return Installation.upgrade(method, target.version)
+-    },
+-  }
+-}
+-
+ async function target() {
+   if (typeof OPENCODE_WORKER_PATH !== "undefined") return OPENCODE_WORKER_PATH
+   const dist = new URL("./cli/tui/worker.js", import.meta.url)
+@@ -225,7 +185,6 @@ export const TuiThreadCommand = cmd({
+       return
+     }
+ 
+-    const unguard = win32InstallCtrlCGuard()
+     try {
+       const { TuiConfig } = await import("@/config/tui")
+       if (args.fork && !args.continue && !args.session) {
+@@ -301,7 +260,6 @@ export const TuiThreadCommand = cmd({
+         return
+       }
+ 
+-      const updater = createUpdater(async () => await client.call("checkUpgrade", { directory: cwd }))
+ 
+       try {
+         const { Effect } = await import("effect")
+@@ -321,7 +279,6 @@ export const TuiThreadCommand = cmd({
+             fetch: transport.fetch,
+             headers: transport.headers,
+             events: transport.events,
+-            updater,
+             args: {
+               continue: args.continue,
+               sessionID: args.session,
 diff --git a/packages/opencode/src/cli/cmd/uninstall.ts b/packages/opencode/src/cli/cmd/uninstall.ts
 deleted file mode 100644
 index 0afdc51..0000000
@@ -468,13 +1525,119 @@ index b329317..0000000
 -    prompts.outro("Done")
 -  },
 -}
-diff --git a/packages/opencode/src/config/managed.ts b/packages/opencode/src/config/managed.ts
-index 877d30a..273a707 100644
---- a/packages/opencode/src/config/managed.ts
-+++ b/packages/opencode/src/config/managed.ts
-@@ -1,69 +1,15 @@
- export * as ConfigManaged from "./managed"
+diff --git a/packages/opencode/src/cli/tui/worker.ts b/packages/opencode/src/cli/tui/worker.ts
+index e6aa516..51918e2 100644
+--- a/packages/opencode/src/cli/tui/worker.ts
++++ b/packages/opencode/src/cli/tui/worker.ts
+@@ -1,7 +1,6 @@
+ import { Server } from "@/server/server"
+ import { InstanceRuntime } from "@/project/instance-runtime"
+ import { Rpc } from "@/util/rpc"
+-import { upgrade } from "@/cli/upgrade"
+ import { Config } from "@/config/config"
+ import { GlobalBus } from "@/bus/global"
+ import { ServerAuth } from "@/server/auth"
+@@ -56,10 +55,6 @@ export const rpc = {
+     server = await Server.listen(input)
+     return { url: server.url.toString() }
+   },
+-  async checkUpgrade(input: { directory: string }) {
+-    await InstanceRuntime.load({ directory: input.directory })
+-    return upgrade().catch(() => undefined)
+-  },
+   async reload() {
+     await AppRuntime.runPromise(
+       Effect.gen(function* () {
+diff --git a/packages/opencode/src/cli/upgrade.ts b/packages/opencode/src/cli/upgrade.ts
+deleted file mode 100644
+index 579de52..0000000
+--- a/packages/opencode/src/cli/upgrade.ts
++++ /dev/null
+@@ -1,37 +0,0 @@
+-import { Config } from "@/config/config"
+-import { AppRuntime } from "@/effect/app-runtime"
+-import { Flag } from "@opencode-ai/core/flag/flag"
+-import { Installation } from "@/installation"
+-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+-
+-// Checking never installs anything. Updates only happen when the user runs `/update` or `opencode upgrade`.
+-export function shouldNotify(input: {
+-  autoupdate: boolean | "notify" | undefined
+-  disabled: boolean
+-  always: boolean
+-  current: string
+-  latest: string
+-}) {
+-  if (input.autoupdate === false || input.disabled) return false
+-  if (input.always) return true
+-  return Installation.isUpdate(input.current, input.latest)
+-}
+-
+-// Returns undefined when checks are disabled or fail, so the TUI only suggests OpenCode 2 after a successful check.
+-export async function upgrade() {
+-  const config = await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.getGlobal()))
+-  if (config.autoupdate === false || Flag.OPENCODE_DISABLE_AUTOUPDATE) return
+-  const latest = await Installation.latest(await Installation.method()).catch(() => {})
+-  if (!latest) return
+-  if (
+-    shouldNotify({
+-      autoupdate: config.autoupdate,
+-      disabled: Flag.OPENCODE_DISABLE_AUTOUPDATE,
+-      always: Flag.OPENCODE_ALWAYS_NOTIFY_UPDATE,
+-      current: InstallationVersion,
+-      latest,
+-    })
+-  )
+-    return { type: "available" as const, version: latest }
+-  return { type: "major" as const }
+-}
+diff --git a/packages/opencode/src/config/config.ts b/packages/opencode/src/config/config.ts
+index 9e10b67..82d078f 100644
+--- a/packages/opencode/src/config/config.ts
++++ b/packages/opencode/src/config/config.ts
+@@ -28,7 +28,6 @@ import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
+ import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
+ import { ConfigAgent } from "./agent"
+ import { ConfigCommand } from "./command"
+-import { ConfigManaged } from "./managed"
+ import { ConfigParse } from "./parse"
+ import { ConfigPaths } from "./paths"
+ import { ConfigPlugin } from "./plugin"
+@@ -527,26 +526,6 @@ const layer = Layer.effect(
+           )
+         }
  
+-        const managedDir = ConfigManaged.managedConfigDir()
+-        if (existsSync(managedDir)) {
+-          for (const file of ["opencode.json", "opencode.jsonc"]) {
+-            const source = path.join(managedDir, file)
+-            yield* merge(source, yield* loadFile(source), "global")
+-          }
+-        }
+-
+-        // macOS managed preferences (.mobileconfig deployed via MDM) override everything
+-        const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
+-        if (managed) {
+-          result = mergeConfigConcatArrays(
+-            result,
+-            yield* loadConfig(managed.text, {
+-              dir: path.dirname(managed.source),
+-              source: managed.source,
+-            }),
+-          )
+-        }
+-
+         for (const [name, mode] of Object.entries(result.mode ?? {})) {
+           result.agent = mergeDeep(result.agent ?? {}, {
+             [name]: {
+diff --git a/packages/opencode/src/config/managed.ts b/packages/opencode/src/config/managed.ts
+deleted file mode 100644
+index 877d30a..0000000
+--- a/packages/opencode/src/config/managed.ts
++++ /dev/null
+@@ -1,69 +0,0 @@
+-export * as ConfigManaged from "./managed"
+-
 -import { existsSync } from "fs"
 -import os from "os"
 -import path from "path"
@@ -492,7 +1655,7 @@ index 877d30a..273a707 100644
 -  "_manualProfile",
 -])
 -
- function systemManagedConfigDir(): string {
+-function systemManagedConfigDir(): string {
 -  switch (process.platform) {
 -    case "darwin":
 -      return "/Library/Application Support/opencode"
@@ -501,13 +1664,12 @@ index 877d30a..273a707 100644
 -    default:
 -      return "/etc/opencode"
 -  }
-+  return "/etc/opencode"
- }
- 
- export function managedConfigDir() {
-   return process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR || systemManagedConfigDir()
- }
- 
+-}
+-
+-export function managedConfigDir() {
+-  return process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR || systemManagedConfigDir()
+-}
+-
 -export function parseManagedPlist(json: string): string {
 -  const raw = JSON.parse(json)
 -  for (const key of Object.keys(raw)) {
@@ -516,9 +1678,7 @@ index 877d30a..273a707 100644
 -  return JSON.stringify(raw)
 -}
 -
-+// Termux has no macOS managed preferences; the Linux managed directory is the
-+// only source.
- export async function readManagedPreferences() {
+-export async function readManagedPreferences() {
 -  if (process.platform !== "darwin") return
 -
 -  const user = (() => {
@@ -543,8 +1703,43 @@ index 877d30a..273a707 100644
 -    }
 -  }
 -
-   return
- }
+-  return
+-}
+diff --git a/packages/opencode/src/config/tui.ts b/packages/opencode/src/config/tui.ts
+index 8f50375..f9267ed 100644
+--- a/packages/opencode/src/config/tui.ts
++++ b/packages/opencode/src/config/tui.ts
+@@ -214,7 +214,7 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory:
+       ...acc.result,
+     },
+     {
+-      terminalSuspend: process.platform !== "win32",
++      terminalSuspend: true,
+     },
+   )
+ 
+diff --git a/packages/opencode/src/effect/app-runtime.ts b/packages/opencode/src/effect/app-runtime.ts
+index d010eb8..1e42a10 100644
+--- a/packages/opencode/src/effect/app-runtime.ts
++++ b/packages/opencode/src/effect/app-runtime.ts
+@@ -43,7 +43,6 @@ import { Project } from "@/project/project"
+ import { Vcs } from "@/project/vcs"
+ import { Workspace } from "@/control-plane/workspace"
+ import { Worktree } from "@/worktree"
+-import { Installation } from "@/installation"
+ import { SessionShare } from "@/share/session"
+ import { Npm } from "@opencode-ai/core/npm"
+ import { memoMap } from "@opencode-ai/core/effect/memo-map"
+@@ -101,8 +100,7 @@ export const AppLayer = AppNodeBuilderV1.build(
+     Vcs.node,
+     Workspace.node,
+     Worktree.node,
+-    Installation.node,
+-    SessionShare.node,
++      SessionShare.node,
+   ]),
+ ).pipe(Layer.provideMerge(AppNodeBuilderV1.build(Ripgrep.node)), Layer.provideMerge(Observability.layer))
+ 
 diff --git a/packages/opencode/src/index.ts b/packages/opencode/src/index.ts
 index 13540a7..120b325 100644
 --- a/packages/opencode/src/index.ts
@@ -567,22 +1762,1495 @@ index 13540a7..120b325 100644
    .command(ServeCommand)
    .command(WebCommand)
    .command(ModelsCommand)
-diff --git a/packages/opencode/src/tool/shell.ts b/packages/opencode/src/tool/shell.ts
-index 1e4423e..b7bbdef 100644
---- a/packages/opencode/src/tool/shell.ts
-+++ b/packages/opencode/src/tool/shell.ts
-@@ -139,9 +139,7 @@ function home(text: string) {
+diff --git a/packages/opencode/src/installation/index.ts b/packages/opencode/src/installation/index.ts
+deleted file mode 100644
+index 439dc84..0000000
+--- a/packages/opencode/src/installation/index.ts
++++ /dev/null
+@@ -1,416 +0,0 @@
+-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+-import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
+-import { Effect, Layer, Schema, Context, Stream } from "effect"
+-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+-import { withTransientReadRetry } from "@/util/effect-http-client"
+-import { errorMessage } from "@/util/error"
+-import { ChildProcess } from "effect/unstable/process"
+-import { AppProcess } from "@opencode-ai/core/process"
+-import path from "path"
+-import { makeRuntime } from "@opencode-ai/core/effect/runtime"
+-import semver from "semver"
+-import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
+-import { NpmConfig } from "@opencode-ai/core/npm-config"
+-import { InstallationEvent } from "@opencode-ai/schema/installation-event"
+-
+-export type Method = "curl" | "npm" | "yarn" | "pnpm" | "bun" | "brew" | "scoop" | "choco" | "unknown"
+-
+-export type ReleaseType = "patch" | "minor" | "major"
+-
+-export const Event = InstallationEvent
+-
+-export function getReleaseType(current: string, latest: string): ReleaseType {
+-  const currMajor = semver.major(current)
+-  const currMinor = semver.minor(current)
+-  const newMajor = semver.major(latest)
+-  const newMinor = semver.minor(latest)
+-
+-  if (newMajor > currMajor) return "major"
+-  if (newMinor > currMinor) return "minor"
+-  return "patch"
+-}
+-
+-export const Info = Schema.Struct({
+-  version: Schema.String,
+-  latest: Schema.String,
+-}).annotate({ identifier: "InstallationInfo" })
+-export type Info = Schema.Schema.Type<typeof Info>
+-
+-export function userAgent(client = "cli") {
+-  return `opencode/${InstallationChannel}/${InstallationVersion}/${client}`
+-}
+-
+-export const USER_AGENT = userAgent()
+-
+-export function isPreview() {
+-  return InstallationChannel !== "latest"
+-}
+-
+-export function isLocal() {
+-  return InstallationChannel === "local"
+-}
+-
+-export class UpgradeFailedError extends Schema.TaggedErrorClass<UpgradeFailedError>()("UpgradeFailedError", {
+-  stderr: Schema.String,
+-}) {
+-  override get message() {
+-    return this.stderr
+-  }
+-}
+-
+-// OpenCode 1 only updates within its own major version. OpenCode 2 is offered separately through
+-// upgradeMajor, so package sources that already publish 2.x (such as Homebrew Core) must not be
+-// reported as a normal update.
+-export function isUpdate(current: string, latest: string) {
+-  if (!semver.valid(latest)) return false
+-  if (!semver.valid(current)) return semver.major(latest) === 1
+-  return semver.major(latest) === semver.major(current) && semver.gt(latest, current)
+-}
+-
+-// Every install method discovers OpenCode 1 releases from npm. opencode-ai only contains OpenCode 1;
+-// OpenCode 2 ships as @opencode/cli. Preview builds follow their own dist-tag, source builds follow latest.
+-const NPM_TAG = InstallationChannel === "local" ? "latest" : InstallationChannel
+-
+-// Response schemas for external version APIs
+-const NpmPackage = Schema.Struct({ version: Schema.String })
+-const BrewInfoV2 = Schema.Struct({
+-  formulae: Schema.Array(Schema.Struct({ versions: Schema.Struct({ stable: Schema.String }) })),
+-})
+-const ChocoPackage = Schema.Struct({
+-  d: Schema.Struct({ results: Schema.Array(Schema.Struct({ Version: Schema.String })) }),
+-})
+-
+-export interface Interface {
+-  readonly info: () => Effect.Effect<Info>
+-  readonly method: () => Effect.Effect<Method>
+-  readonly latest: (method?: Method) => Effect.Effect<string>
+-  readonly upgrade: (method: Method, target: string) => Effect.Effect<void, UpgradeFailedError>
+-  readonly upgradeMajor: (method: Method) => Effect.Effect<void, UpgradeFailedError>
+-}
+-
+-// OpenCode 2 ships under different package names but the same `opencode` binary, so package
+-// manager installs remove V1 first and restore it if the V2 install fails.
+-const MAJOR_INSTALL: Partial<Record<Method, { remove: string[]; install: string[]; restore: string[] }>> = {
+-  npm: {
+-    remove: ["npm", "uninstall", "-g", "opencode-ai"],
+-    install: ["npm", "install", "-g", "@opencode/cli"],
+-    restore: ["npm", "install", "-g", `opencode-ai@${InstallationVersion}`],
+-  },
+-  pnpm: {
+-    remove: ["pnpm", "remove", "-g", "opencode-ai"],
+-    install: ["pnpm", "add", "-g", "--allow-build=@opencode/cli", "@opencode/cli"],
+-    restore: ["pnpm", "add", "-g", `opencode-ai@${InstallationVersion}`],
+-  },
+-  bun: {
+-    remove: ["bun", "remove", "-g", "opencode-ai"],
+-    install: ["bun", "install", "-g", "--trust", "@opencode/cli"],
+-    restore: ["bun", "install", "-g", `opencode-ai@${InstallationVersion}`],
+-  },
+-  yarn: {
+-    remove: ["yarn", "global", "remove", "opencode-ai"],
+-    install: ["yarn", "global", "add", "@opencode/cli"],
+-    restore: ["yarn", "global", "add", `opencode-ai@${InstallationVersion}`],
+-  },
+-}
+-
+-export const MAJOR_INSTRUCTIONS = "https://opencode.ai/v2/docs"
+-
+-export class Service extends Context.Service<Service, Interface>()("@opencode/Installation") {}
+-
+-export const use = serviceUse(Service)
+-
+-const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Service> = Layer.effect(
+-  Service,
+-  Effect.gen(function* () {
+-    const http = yield* HttpClient.HttpClient
+-    const httpOk = HttpClient.filterStatusOk(withTransientReadRetry(http))
+-    const appProcess = yield* AppProcess.Service
+-
+-    const text = Effect.fnUntraced(
+-      function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
+-        const result = yield* appProcess.run(
+-          ChildProcess.make(cmd[0], cmd.slice(1), {
+-            cwd: opts?.cwd,
+-            env: opts?.env,
+-            extendEnv: true,
+-          }),
+-        )
+-        return result.stdout.toString("utf8")
+-      },
+-      Effect.catch(() => Effect.succeed("")),
+-    )
+-
+-    const run = Effect.fnUntraced(
+-      function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
+-        const result = yield* appProcess.run(
+-          ChildProcess.make(cmd[0], cmd.slice(1), {
+-            cwd: opts?.cwd,
+-            env: opts?.env,
+-            extendEnv: true,
+-          }),
+-        )
+-        return {
+-          code: result.exitCode,
+-          stdout: result.stdout.toString("utf8"),
+-          stderr: result.stderr.toString("utf8"),
+-        }
+-      },
+-      Effect.catch((err) => Effect.succeed({ code: 1, stdout: "", stderr: errorMessage(err) })),
+-    )
+-
+-    const getBrewFormula = Effect.fnUntraced(function* () {
+-      const tapFormula = yield* text(["brew", "list", "--formula", "anomalyco/tap/opencode"])
+-      if (tapFormula.includes("opencode")) return "anomalyco/tap/opencode"
+-      const coreFormula = yield* text(["brew", "list", "--formula", "opencode"])
+-      if (coreFormula.includes("opencode")) return "opencode"
+-      return "opencode"
+-    })
+-
+-    const upgradeFailure = (method: Method, result?: { code: number; stdout: string; stderr: string }) => {
+-      if (method === "choco") return "not running from an elevated command shell"
+-      if (result) return `Upgrade failed for ${method} (exit code ${result.code}).`
+-      return `Upgrade failed for ${method}.`
+-    }
+-
+-    const upgradeScriptShell = Effect.fnUntraced(function* () {
+-      const bashVersion = yield* text(["bash", "--version"])
+-      if (bashVersion) return "bash"
+-      return "sh"
+-    })
+-
+-    const upgradeCurl = Effect.fnUntraced(
+-      function* (target: string) {
+-        const response = yield* httpOk.execute(HttpClientRequest.get("https://opencode.ai/install"))
+-        const body = yield* response.text
+-        const bodyBytes = new TextEncoder().encode(body)
+-        const shell = yield* upgradeScriptShell()
+-        const result = yield* appProcess.run(
+-          ChildProcess.make(shell, [], {
+-            stdin: Stream.make(bodyBytes),
+-            env: { VERSION: target },
+-            extendEnv: true,
+-          }),
+-        )
+-        return {
+-          code: result.exitCode,
+-          stdout: result.stdout.toString("utf8"),
+-          stderr: result.stderr.toString("utf8"),
+-        }
+-      },
+-      Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
+-    )
+-
+-    const majorUpgrade = Effect.fnUntraced(function* (m: Method) {
+-      if (m === "curl") {
+-        // The V2 installer writes to the same ~/.opencode/bin/opencode path, replacing V1 in place.
+-        const response = yield* httpOk
+-          .execute(HttpClientRequest.get("https://opencode.ai/v2/install"))
+-          .pipe(Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })))
+-        const body = yield* response.text.pipe(
+-          Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
+-        )
+-        return yield* run([yield* upgradeScriptShell(), "-c", body])
+-      }
+-
+-      if (m === "brew") {
+-        const formula = yield* getBrewFormula()
+-        const env = { HOMEBREW_NO_AUTO_UPDATE: "1" }
+-        const removed = yield* run(["brew", "uninstall", formula], { env })
+-        if (removed.code !== 0) return removed
+-        const installed = yield* run(["brew", "install", "anomalyco/tap/opencode-v2"], { env })
+-        if (installed.code !== 0) yield* run(["brew", "install", formula], { env })
+-        return installed
+-      }
+-
+-      const steps = MAJOR_INSTALL[m]
+-      if (!steps)
+-        return yield* new UpgradeFailedError({
+-          stderr: `OpenCode 2 can't be installed automatically with ${m}. See ${MAJOR_INSTRUCTIONS}`,
+-        })
+-      const removed = yield* run(steps.remove)
+-      if (removed.code !== 0) return removed
+-      const installed = yield* run(steps.install)
+-      if (installed.code !== 0) yield* run(steps.restore)
+-      return installed
+-    })
+-
+-    const npmLatest = Effect.fnUntraced(function* () {
+-      const response = yield* httpOk.execute(
+-        HttpClientRequest.get(`${yield* NpmConfig.registry(process.cwd())}/opencode-ai/${NPM_TAG}`).pipe(
+-          HttpClientRequest.acceptJson,
+-        ),
+-      )
+-      const data = yield* HttpClientResponse.schemaBodyJson(NpmPackage)(response)
+-      return data.version
+-    })
+-
+-    // Chocolatey can only install versions its moderated community feed has published.
+-    const chocoHas = Effect.fnUntraced(function* (version: string) {
+-      const response = yield* httpOk.execute(
+-        HttpClientRequest.get(
+-          `https://community.chocolatey.org/api/v2/Packages?$filter=Id%20eq%20%27opencode%27%20and%20Version%20eq%20%27${encodeURIComponent(version)}%27&$select=Version`,
+-        ).pipe(HttpClientRequest.setHeaders({ Accept: "application/json;odata=verbose" })),
+-      )
+-      const data = yield* HttpClientResponse.schemaBodyJson(ChocoPackage)(response)
+-      return data.d.results.length > 0
+-    })
+-
+-    const tapVersion = Effect.fnUntraced(
+-      function* (formula: string) {
+-        const infoJson = yield* text(["brew", "info", "--json=v2", formula])
+-        const info = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BrewInfoV2))(infoJson)
+-        return info.formulae[0].versions.stable
+-      },
+-      Effect.orElseSucceed(() => undefined),
+-    )
+-
+-    const result: Interface = {
+-      info: Effect.fn("Installation.info")(function* () {
+-        return {
+-          version: InstallationVersion,
+-          latest: yield* result.latest(),
+-        }
+-      }),
+-      method: Effect.fn("Installation.method")(function* () {
+-        if (process.execPath.includes(path.join(".opencode", "bin"))) return "curl" as Method
+-        if (process.execPath.includes(path.join(".local", "bin"))) return "curl" as Method
+-        const exec = process.execPath.toLowerCase()
+-
+-        const checks: Array<{ name: Method; command: () => Effect.Effect<string> }> = [
+-          { name: "npm", command: () => text(["npm", "list", "-g", "--depth=0"]) },
+-          { name: "yarn", command: () => text(["yarn", "global", "list"]) },
+-          { name: "pnpm", command: () => text(["pnpm", "list", "-g", "--depth=0"]) },
+-          { name: "bun", command: () => text(["bun", "pm", "ls", "-g"]) },
+-          { name: "brew", command: () => text(["brew", "list", "--formula", "opencode"]) },
+-          { name: "scoop", command: () => text(["scoop", "list", "opencode"]) },
+-          { name: "choco", command: () => text(["choco", "list", "--limit-output", "opencode"]) },
+-        ]
+-
+-        checks.sort((a, b) => {
+-          const aMatches = exec.includes(a.name)
+-          const bMatches = exec.includes(b.name)
+-          if (aMatches && !bMatches) return -1
+-          if (!aMatches && bMatches) return 1
+-          return 0
+-        })
+-
+-        for (const check of checks) {
+-          const output = yield* check.command()
+-          const installedName =
+-            check.name === "brew" || check.name === "choco" || check.name === "scoop" ? "opencode" : "opencode-ai"
+-          if (output.includes(installedName)) {
+-            return check.name
+-          }
+-        }
+-
+-        return "unknown" as Method
+-      }),
+-      // Reports the installed version when there's no OpenCode 1 update this install method can deliver,
+-      // so callers offer OpenCode 2 through the major upgrade instead.
+-      latest: Effect.fn("Installation.latest")(function* (installMethod?: Method) {
+-        const method = installMethod || (yield* result.method())
+-        // Homebrew Core's opencode formula is OpenCode 2, so `brew upgrade` can't deliver an OpenCode 1 update.
+-        if (method === "brew" && !(yield* getBrewFormula()).includes("/")) return InstallationVersion
+-        return yield* Effect.gen(function* () {
+-          const found = yield* npmLatest()
+-          if (!isUpdate(InstallationVersion, found)) return InstallationVersion
+-          if (method === "choco" && !(yield* chocoHas(found))) return InstallationVersion
+-          return found
+-        }).pipe(Effect.timeout("10 seconds"))
+-      }, Effect.orDie),
+-      upgrade: Effect.fn("Installation.upgrade")(function* (m: Method, target: string) {
+-        if (semver.valid(target) && semver.major(target) >= 2)
+-          return yield* new UpgradeFailedError({
+-            stderr: `OpenCode ${target} is OpenCode 2. Upgrade with \`opencode upgrade --major\` or see ${MAJOR_INSTRUCTIONS}`,
+-          })
+-        let upgradeResult: { code: number; stdout: string; stderr: string } | undefined
+-        switch (m) {
+-          case "curl":
+-            upgradeResult = yield* upgradeCurl(target)
+-            break
+-          case "npm":
+-            upgradeResult = yield* run(["npm", "install", "-g", `opencode-ai@${target}`])
+-            break
+-          case "pnpm":
+-            upgradeResult = yield* run(["pnpm", "install", "-g", `opencode-ai@${target}`])
+-            break
+-          case "bun":
+-            upgradeResult = yield* run(["bun", "install", "-g", `opencode-ai@${target}`])
+-            break
+-          case "yarn":
+-            upgradeResult = yield* run(["yarn", "global", "add", `opencode-ai@${target}`])
+-            break
+-          case "brew": {
+-            const formula = yield* getBrewFormula()
+-            const env = { HOMEBREW_NO_AUTO_UPDATE: "1" }
+-            if (!formula.includes("/"))
+-              return yield* new UpgradeFailedError({
+-                stderr: `Homebrew Core's opencode formula is OpenCode 2, so Homebrew can't install OpenCode ${target}. Upgrade with \`opencode upgrade --major\`, or reinstall from anomalyco/tap/opencode to stay on OpenCode 1.`,
+-              })
+-            const tap = yield* run(["brew", "tap", "anomalyco/tap"], { env })
+-            if (tap.code !== 0) {
+-              upgradeResult = tap
+-              break
+-            }
+-            const repo = yield* text(["brew", "--repo", "anomalyco/tap"])
+-            const dir = repo.trim()
+-            if (dir) {
+-              const pull = yield* run(["git", "pull", "--ff-only"], { cwd: dir, env })
+-              if (pull.code !== 0) {
+-                upgradeResult = pull
+-                break
+-              }
+-            }
+-            // The tap is updated shortly after npm, so a just-published release may not be installable yet.
+-            const available = yield* tapVersion(formula)
+-            if (!available || semver.major(available) !== semver.major(target) || semver.lt(available, target))
+-              return yield* new UpgradeFailedError({
+-                stderr: `Homebrew can't install OpenCode ${target} yet: ${formula} is at ${available ?? "an unknown version"}. Try again in a few minutes.`,
+-              })
+-            upgradeResult = yield* run(["brew", "upgrade", formula], { env })
+-            break
+-          }
+-          case "choco":
+-            upgradeResult = yield* run(["choco", "upgrade", "opencode", `--version=${target}`, "-y"])
+-            break
+-          case "scoop":
+-            upgradeResult = yield* run(["scoop", "install", `opencode@${target}`])
+-            break
+-          default:
+-            return yield* new UpgradeFailedError({ stderr: `Unknown installation method: ${m}` })
+-        }
+-        if (!upgradeResult || upgradeResult.code !== 0) {
+-          return yield* new UpgradeFailedError({ stderr: upgradeFailure(m, upgradeResult) })
+-        }
+-        yield* Effect.logInfo("upgraded", {
+-          method: m,
+-          target,
+-          stdout: upgradeResult.stdout,
+-          stderr: upgradeResult.stderr,
+-        })
+-        yield* text([process.execPath, "--version"])
+-      }),
+-      upgradeMajor: Effect.fn("Installation.upgradeMajor")(function* (m: Method) {
+-        const outcome = yield* majorUpgrade(m)
+-        if (outcome.code !== 0) return yield* new UpgradeFailedError({ stderr: upgradeFailure(m, outcome) })
+-        yield* Effect.logInfo("upgraded major", { method: m, stdout: outcome.stdout, stderr: outcome.stderr })
+-      }),
+-    }
+-
+-    return Service.of(result)
+-  }),
+-)
+-
+-export const node = LayerNode.make({ service: Service, layer: layer, deps: [httpClient, AppProcess.node] })
+-
+-const { runPromise } = makeRuntime(Service, AppNodeBuilder.build(node))
+-
+-export const latest = (...args: Parameters<Interface["latest"]>) => runPromise((s) => s.latest(...args))
+-export const method = () => runPromise((s) => s.method())
+-export const upgrade = (...args: Parameters<Interface["upgrade"]>) => runPromise((s) => s.upgrade(...args))
+-export const upgradeMajor = (...args: Parameters<Interface["upgradeMajor"]>) =>
+-  runPromise((s) => s.upgradeMajor(...args))
+-
+-export * as Installation from "."
+diff --git a/packages/opencode/src/lsp/client.ts b/packages/opencode/src/lsp/client.ts
+index 08d8a53..9073e99 100644
+--- a/packages/opencode/src/lsp/client.ts
++++ b/packages/opencode/src/lsp/client.ts
+@@ -70,7 +70,7 @@ type ServerCapabilities = {
+ 
+ function getFilePath(uri: string) {
+   if (!uri.startsWith("file://")) return
+-  return Filesystem.normalizePath(fileURLToPath(uri))
++  return fileURLToPath(uri)
  }
  
- function envValue(key: string) {
+ function getSyncKind(capabilities?: ServerCapabilities) {
+@@ -552,9 +552,7 @@ export async function create(input: {
+     },
+     notify: {
+       async open(request: { path: string }) {
+-        request.path = Filesystem.normalizePath(
+-          path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
+-        )
++        request.path = path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path)
+         const text = await Filesystem.readText(request.path)
+         const extension = path.extname(request.path)
+         const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
+@@ -628,9 +626,7 @@ export async function create(input: {
+       return result
+     },
+     async waitForDiagnostics(request: { path: string; version: number; mode?: "document" | "full"; after?: number }) {
+-      const normalizedPath = Filesystem.normalizePath(
+-        path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
+-      )
++      const normalizedPath = path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path)
+       if (request.mode === "document") {
+         await waitForDocumentDiagnostics({ path: normalizedPath, version: request.version, after: request.after })
+         return
+diff --git a/packages/opencode/src/lsp/language.ts b/packages/opencode/src/lsp/language.ts
+index 07a2e97..db0ada4 100644
+--- a/packages/opencode/src/lsp/language.ts
++++ b/packages/opencode/src/lsp/language.ts
+@@ -65,8 +65,6 @@ export const LANGUAGE_EXTENSIONS: Record<string, string> = {
+   ".pm": "perl",
+   ".pm6": "perl6",
+   ".php": "php",
+-  ".ps1": "powershell",
+-  ".psm1": "powershell",
+   ".pug": "jade",
+   ".jade": "jade",
+   ".py": "python",
+diff --git a/packages/opencode/src/lsp/server.ts b/packages/opencode/src/lsp/server.ts
+index 2be68aa..c24b200 100644
+--- a/packages/opencode/src/lsp/server.ts
++++ b/packages/opencode/src/lsp/server.ts
+@@ -203,9 +203,8 @@ export const ESLint: Info = {
+       }
+       await fs.rename(extractedPath, finalPath)
+ 
+-      const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
+-      await Process.run([npmCmd, "install"], { cwd: finalPath })
+-      await Process.run([npmCmd, "run", "compile"], { cwd: finalPath })
++      await Process.run(["npm", "install"], { cwd: finalPath })
++      await Process.run(["npm", "run", "compile"], { cwd: finalPath })
+     }
+ 
+     const proc = spawn("node", [serverPath, "--stdio"], {
+@@ -234,10 +233,8 @@ export const Oxlint: Info = {
+   ]),
+   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".astro", ".svelte"],
+   async spawn(root, ctx) {
+-    const ext = process.platform === "win32" ? ".cmd" : ""
+-
+-    const serverTarget = path.join("node_modules", ".bin", "oxc_language_server" + ext)
+-    const lintTarget = path.join("node_modules", ".bin", "oxlint" + ext)
++    const serverTarget = path.join("node_modules", ".bin", "oxc_language_server")
++    const lintTarget = path.join("node_modules", ".bin", "oxlint")
+ 
+     const resolveBin = async (target: string) => {
+       const localBin = path.join(root, target)
+@@ -379,7 +376,7 @@ export const Gopls: Info = {
+       if (exit !== 0) {
+         return
+       }
+-      bin = path.join(Global.Path.bin, "gopls" + (process.platform === "win32" ? ".exe" : ""))
++      bin = path.join(Global.Path.bin, "gopls")
+     }
+     return {
+       process: spawn(bin!, {
+@@ -411,7 +408,7 @@ export const Rubocop: Info = {
+       if (exit !== 0) {
+         return
+       }
+-      bin = path.join(Global.Path.bin, "rubocop" + (process.platform === "win32" ? ".exe" : ""))
++      bin = path.join(Global.Path.bin, "rubocop")
+     }
+     return {
+       process: spawn(bin!, ["--lsp"], {
+@@ -446,10 +443,7 @@ export const Ty: Info = {
+       (p): p is string => p !== undefined,
+     )
+     for (const venvPath of potentialVenvPaths) {
+-      const isWindows = process.platform === "win32"
+-      const potentialPythonPath = isWindows
+-        ? path.join(venvPath, "Scripts", "python.exe")
+-        : path.join(venvPath, "bin", "python")
++      const potentialPythonPath = path.join(venvPath, "bin", "python")
+       if (await Filesystem.exists(potentialPythonPath)) {
+         initialization["pythonPath"] = potentialPythonPath
+         break
+@@ -458,8 +452,7 @@ export const Ty: Info = {
+ 
+     if (!binary) {
+       for (const venvPath of potentialVenvPaths) {
+-        const isWindows = process.platform === "win32"
+-        const potentialTyPath = isWindows ? path.join(venvPath, "Scripts", "ty.exe") : path.join(venvPath, "bin", "ty")
++        const potentialTyPath = path.join(venvPath, "bin", "ty")
+         if (await Filesystem.exists(potentialTyPath)) {
+           binary = potentialTyPath
+           break
+@@ -503,10 +496,7 @@ export const Pyright: Info = {
+       (p): p is string => p !== undefined,
+     )
+     for (const venvPath of potentialVenvPaths) {
+-      const isWindows = process.platform === "win32"
+-      const potentialPythonPath = isWindows
+-        ? path.join(venvPath, "Scripts", "python.exe")
+-        : path.join(venvPath, "bin", "python")
++      const potentialPythonPath = path.join(venvPath, "bin", "python")
+       if (await Filesystem.exists(potentialPythonPath)) {
+         initialization["pythonPath"] = potentialPythonPath
+         break
+@@ -538,7 +528,7 @@ export const ElixirLS: Info = {
+         Global.Path.bin,
+         "elixir-ls-master",
+         "release",
+-        process.platform === "win32" ? "language_server.bat" : "language_server.sh",
++        "language_server.sh",
+       )
+ 
+       if (!(await Filesystem.exists(binary))) {
+@@ -606,7 +596,6 @@ export const Zls: Info = {
+         assets?: { name?: string; browser_download_url?: string }[]
+       }
+ 
+-      const platform = process.platform
+       const arch = process.arch
+       let assetName = ""
+ 
+@@ -615,24 +604,9 @@ export const Zls: Info = {
+       else if (arch === "x64") zlsArch = "x86_64"
+       else if (arch === "ia32") zlsArch = "x86"
+ 
+-      let zlsPlatform: string = platform
+-      if (platform === "darwin") zlsPlatform = "macos"
+-      else if (platform === "win32") zlsPlatform = "windows"
+-
+-      const ext = platform === "win32" ? "zip" : "tar.xz"
+-
+-      assetName = `zls-${zlsArch}-${zlsPlatform}.${ext}`
++      assetName = `zls-${zlsArch}-linux.tar.xz`
+ 
+-      const supportedCombos = [
+-        "zls-x86_64-linux.tar.xz",
+-        "zls-x86_64-macos.tar.xz",
+-        "zls-x86_64-windows.zip",
+-        "zls-aarch64-linux.tar.xz",
+-        "zls-aarch64-macos.tar.xz",
+-        "zls-aarch64-windows.zip",
+-        "zls-x86-linux.tar.xz",
+-        "zls-x86-windows.zip",
+-      ]
++      const supportedCombos = ["zls-x86_64-linux.tar.xz", "zls-aarch64-linux.tar.xz", "zls-x86-linux.tar.xz"]
+ 
+       if (!supportedCombos.includes(assetName)) {
+         return
+@@ -652,28 +626,17 @@ export const Zls: Info = {
+       const tempPath = path.join(Global.Path.bin, assetName)
+       if (downloadResponse.body) await Filesystem.writeStream(tempPath, downloadResponse.body)
+ 
+-      if (ext === "zip") {
+-        const ok = await Archive.extractZip(tempPath, Global.Path.bin)
+-          .then(() => true)
+-          .catch((error) => {
+-            return false
+-          })
+-        if (!ok) return
+-      } else {
+-        await run(["tar", "-xf", tempPath], { cwd: Global.Path.bin })
+-      }
++      await run(["tar", "-xf", tempPath], { cwd: Global.Path.bin })
+ 
+       await fs.rm(tempPath, { force: true })
+ 
+-      bin = path.join(Global.Path.bin, "zls" + (platform === "win32" ? ".exe" : ""))
++      bin = path.join(Global.Path.bin, "zls")
+ 
+       if (!(await Filesystem.exists(bin))) {
+         return
+       }
+ 
+-      if (platform !== "win32") {
+-        await fs.chmod(bin, 0o755).catch(() => {})
+-      }
++      await fs.chmod(bin, 0o755).catch(() => {})
+     }
+ 
+     return {
+@@ -779,7 +742,7 @@ async function roslynLanguageServerGlobalPath() {
+     process.env.DOTNET_CLI_HOME ?? os.homedir(),
+     ".dotnet",
+     "tools",
+-    "roslyn-language-server" + (process.platform === "win32" ? ".cmd" : ""),
++    "roslyn-language-server",
+   )
+   return (await pathExists(bin)) ? bin : undefined
+ }
+@@ -842,7 +805,7 @@ export const FSharp: Info = {
+         return
+       }
+ 
+-      bin = path.join(Global.Path.bin, "fsautocomplete" + (process.platform === "win32" ? ".exe" : ""))
++      bin = path.join(Global.Path.bin, "fsautocomplete")
+     }
+ 
+     return {
+@@ -869,21 +832,6 @@ export const SourceKit: Info = {
+       }
+     }
+ 
+-    // If sourcekit-lsp not found, check if xcrun is available
+-    // This is specific to macOS where sourcekit-lsp is typically installed with Xcode
+-    if (!which("xcrun")) return
+-
+-    const lspLoc = await output(["xcrun", "--find", "sourcekit-lsp"])
+-
+-    if (lspLoc.code !== 0) return
+-
+-    const bin = lspLoc.text.trim()
+-
+-    return {
+-      process: spawn(bin, {
+-        cwd: root,
+-      }),
+-    }
+   },
+ }
+ 
+@@ -947,8 +895,7 @@ export const Clangd: Info = {
+       }
+     }
+ 
+-    const ext = process.platform === "win32" ? ".exe" : ""
+-    const direct = path.join(Global.Path.bin, "clangd" + ext)
++    const direct = path.join(Global.Path.bin, "clangd")
+     if (await Filesystem.exists(direct)) {
+       return {
+         process: spawn(direct, args, {
+@@ -987,16 +934,7 @@ export const Clangd: Info = {
+     if (!tag) {
+       return
+     }
+-    const platform = process.platform
+-    const tokens: Record<string, string> = {
+-      darwin: "mac",
+-      linux: "linux",
+-      win32: "windows",
+-    }
+-    const token = tokens[platform]
+-    if (!token) {
+-      return
+-    }
++    const token = "linux"
+ 
+     const assets = release.assets ?? []
+     const valid = (item: { name?: string; browser_download_url?: string }) => {
+@@ -1051,9 +989,7 @@ export const Clangd: Info = {
+       return
+     }
+ 
+-    if (platform !== "win32") {
+-      await fs.chmod(bin, 0o755).catch(() => {})
+-    }
++    await fs.chmod(bin, 0o755).catch(() => {})
+ 
+     await fs.unlink(path.join(Global.Path.bin, "clangd")).catch(() => {})
+     await fs.symlink(bin, path.join(Global.Path.bin, "clangd")).catch(() => {})
+@@ -1230,18 +1166,7 @@ export const JDTLS: Info = {
+     }
+     const configFile = path.join(
+       distPath,
+-      (() => {
+-        switch (process.platform) {
+-          case "darwin":
+-            return "config_mac"
+-          case "linux":
+-            return "config_linux"
+-          case "win32":
+-            return "config_win"
+-          default:
+-            return "config_linux"
+-        }
+-      })(),
++      "config_linux",
+     )
+     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-jdtls-data"))
+     return {
+@@ -1288,8 +1213,7 @@ export const KotlinLS: Info = {
+   },
+   async spawn(root, _ctx, flags) {
+     const distPath = path.join(Global.Path.bin, "kotlin-ls")
+-    const launcherScript =
+-      process.platform === "win32" ? path.join(distPath, "kotlin-lsp.cmd") : path.join(distPath, "kotlin-lsp.sh")
++    const launcherScript = path.join(distPath, "kotlin-lsp.sh")
+     const installed = await Filesystem.exists(launcherScript)
+     if (!installed) {
+       if (flags.disableLspDownload) return
+@@ -1306,27 +1230,21 @@ export const KotlinLS: Info = {
+         return
+       }
+ 
+-      const platform = process.platform
+       const arch = process.arch
+ 
+       let kotlinArch: string = arch
+       if (arch === "arm64") kotlinArch = "aarch64"
+       else if (arch === "x64") kotlinArch = "x64"
+ 
+-      let kotlinPlatform: string = platform
+-      if (platform === "darwin") kotlinPlatform = "mac"
+-      else if (platform === "linux") kotlinPlatform = "linux"
+-      else if (platform === "win32") kotlinPlatform = "win"
+-
+-      const supportedCombos = ["mac-x64", "mac-aarch64", "linux-x64", "linux-aarch64", "win-x64", "win-aarch64"]
++      const supportedCombos = ["linux-x64", "linux-aarch64"]
+ 
+-      const combo = `${kotlinPlatform}-${kotlinArch}`
++      const combo = `linux-${kotlinArch}`
+ 
+       if (!supportedCombos.includes(combo)) {
+         return
+       }
+ 
+-      const assetName = `kotlin-lsp-${version}-${kotlinPlatform}-${kotlinArch}.zip`
++      const assetName = `kotlin-lsp-${version}-linux-${kotlinArch}.zip`
+       const releaseURL = `https://download-cdn.jetbrains.com/kotlin-lsp/${version}/${assetName}`
+ 
+       await fs.mkdir(distPath, { recursive: true })
+@@ -1343,9 +1261,7 @@ export const KotlinLS: Info = {
+         })
+       if (!ok) return
+       await fs.rm(archivePath, { force: true })
+-      if (process.platform !== "win32") {
+-        await fs.chmod(launcherScript, 0o755).catch(() => {})
+-      }
++      await fs.chmod(launcherScript, 0o755).catch(() => {})
+     }
+     if (!(await Filesystem.exists(launcherScript))) {
+       return
+@@ -1409,7 +1325,6 @@ export const LuaLS: Info = {
+ 
+       const release = await releaseResponse.json()
+ 
+-      const platform = process.platform
+       const arch = process.arch
+       let assetName = ""
+ 
+@@ -1418,25 +1333,11 @@ export const LuaLS: Info = {
+       else if (arch === "x64") lualsArch = "x64"
+       else if (arch === "ia32") lualsArch = "ia32"
+ 
+-      let lualsPlatform: string = platform
+-      if (platform === "darwin") lualsPlatform = "darwin"
+-      else if (platform === "linux") lualsPlatform = "linux"
+-      else if (platform === "win32") lualsPlatform = "win32"
+-
+-      const ext = platform === "win32" ? "zip" : "tar.gz"
++      assetName = `lua-language-server-${release.tag_name}-linux-${lualsArch}.tar.gz`
+ 
+-      assetName = `lua-language-server-${release.tag_name}-${lualsPlatform}-${lualsArch}.${ext}`
++      const supportedCombos = ["linux-x64.tar.gz", "linux-arm64.tar.gz"]
+ 
+-      const supportedCombos = [
+-        "darwin-arm64.tar.gz",
+-        "darwin-x64.tar.gz",
+-        "linux-x64.tar.gz",
+-        "linux-arm64.tar.gz",
+-        "win32-x64.zip",
+-        "win32-ia32.zip",
+-      ]
+-
+-      const assetSuffix = `${lualsPlatform}-${lualsArch}.${ext}`
++      const assetSuffix = `linux-${lualsArch}.tar.gz`
+       if (!supportedCombos.includes(assetSuffix)) {
+         return
+       }
+@@ -1458,7 +1359,7 @@ export const LuaLS: Info = {
+       // Unlike zls which is a single self-contained binary,
+       // lua-language-server needs supporting files (meta/, locale/, etc.)
+       // Extract entire archive to dedicated directory to preserve all files
+-      const installDir = path.join(Global.Path.bin, `lua-language-server-${lualsArch}-${lualsPlatform}`)
++      const installDir = path.join(Global.Path.bin, `lua-language-server-linux-${lualsArch}`)
+ 
+       // Remove old installation if exists
+       const stats = await fs.stat(installDir).catch(() => undefined)
+@@ -1468,32 +1369,23 @@ export const LuaLS: Info = {
+ 
+       await fs.mkdir(installDir, { recursive: true })
+ 
+-      if (ext === "zip") {
+-        const ok = await Archive.extractZip(tempPath, installDir)
+-          .then(() => true)
+-          .catch((error) => {
+-            return false
+-          })
+-        if (!ok) return
+-      } else {
+-        const ok = await run(["tar", "-xzf", tempPath, "-C", installDir])
+-          .then((result) => result.code === 0)
+-          .catch((error: unknown) => {
+-            return false
+-          })
+-        if (!ok) return
+-      }
++      const ok = await run(["tar", "-xzf", tempPath, "-C", installDir])
++        .then((result) => result.code === 0)
++        .catch((error: unknown) => {
++          return false
++        })
++      if (!ok) return
+ 
+       await fs.rm(tempPath, { force: true })
+ 
+       // Binary is located in bin/ subdirectory within the extracted archive
+-      bin = path.join(installDir, "bin", "lua-language-server" + (platform === "win32" ? ".exe" : ""))
++      bin = path.join(installDir, "bin", "lua-language-server")
+ 
+       if (!(await Filesystem.exists(bin))) {
+         return
+       }
+ 
+-      if (platform !== "win32") {
++      {
+         const ok = await fs
+           .chmod(bin, 0o755)
+           .then(() => true)
+@@ -1639,11 +1531,10 @@ export const TerraformLS: Info = {
+         builds?: { arch?: string; os?: string; url?: string }[]
+       }
+ 
+-      const platform = process.platform
+       const arch = process.arch
+ 
+       const tfArch = arch === "arm64" ? "arm64" : "amd64"
+-      const tfPlatform = platform === "win32" ? "windows" : platform
++      const tfPlatform = "linux"
+ 
+       const builds = release.builds ?? []
+       const build = builds.find((b) => b.arch === tfArch && b.os === tfPlatform)
+@@ -1667,15 +1558,13 @@ export const TerraformLS: Info = {
+       if (!ok) return
+       await fs.rm(tempPath, { force: true })
+ 
+-      bin = path.join(Global.Path.bin, "terraform-ls" + (platform === "win32" ? ".exe" : ""))
++      bin = path.join(Global.Path.bin, "terraform-ls")
+ 
+       if (!(await Filesystem.exists(bin))) {
+         return
+       }
+ 
+-      if (platform !== "win32") {
+-        await fs.chmod(bin, 0o755).catch(() => {})
+-      }
++      await fs.chmod(bin, 0o755).catch(() => {})
+     }
+ 
+     return {
+@@ -1716,13 +1605,10 @@ export const TexLab: Info = {
+         return
+       }
+ 
+-      const platform = process.platform
+       const arch = process.arch
+ 
+       const texArch = arch === "arm64" ? "aarch64" : "x86_64"
+-      const texPlatform = platform === "darwin" ? "macos" : platform === "win32" ? "windows" : "linux"
+-      const ext = platform === "win32" ? "zip" : "tar.gz"
+-      const assetName = `texlab-${texArch}-${texPlatform}.${ext}`
++      const assetName = `texlab-${texArch}-linux.tar.gz`
+ 
+       const assets = release.assets ?? []
+       const asset = assets.find((a) => a.name === assetName)
+@@ -1738,29 +1624,17 @@ export const TexLab: Info = {
+       const tempPath = path.join(Global.Path.bin, assetName)
+       if (downloadResponse.body) await Filesystem.writeStream(tempPath, downloadResponse.body)
+ 
+-      if (ext === "zip") {
+-        const ok = await Archive.extractZip(tempPath, Global.Path.bin)
+-          .then(() => true)
+-          .catch((error) => {
+-            return false
+-          })
+-        if (!ok) return
+-      }
+-      if (ext === "tar.gz") {
+-        await run(["tar", "-xzf", tempPath], { cwd: Global.Path.bin })
+-      }
++      await run(["tar", "-xzf", tempPath], { cwd: Global.Path.bin })
+ 
+       await fs.rm(tempPath, { force: true })
+ 
+-      bin = path.join(Global.Path.bin, "texlab" + (platform === "win32" ? ".exe" : ""))
++      bin = path.join(Global.Path.bin, "texlab")
+ 
+       if (!(await Filesystem.exists(bin))) {
+         return
+       }
+ 
+-      if (platform !== "win32") {
+-        await fs.chmod(bin, 0o755).catch(() => {})
+-      }
++      await fs.chmod(bin, 0o755).catch(() => {})
+     }
+ 
+     return {
+@@ -1820,9 +1694,6 @@ export const Clojure: Info = {
+   root: NearestRoot(["deps.edn", "project.clj", "shadow-cljs.edn", "bb.edn", "build.boot"]),
+   async spawn(root) {
+     let bin = which("clojure-lsp")
+-    if (!bin && process.platform === "win32") {
+-      bin = which("clojure-lsp.exe")
+-    }
+     if (!bin) {
+       return
+     }
+@@ -1884,25 +1755,10 @@ export const Tinymist: Info = {
+         assets?: { name?: string; browser_download_url?: string }[]
+       }
+ 
+-      const platform = process.platform
+       const arch = process.arch
+ 
+       const tinymistArch = arch === "arm64" ? "aarch64" : "x86_64"
+-      let tinymistPlatform: string
+-      let ext: string
+-
+-      if (platform === "darwin") {
+-        tinymistPlatform = "apple-darwin"
+-        ext = "tar.gz"
+-      } else if (platform === "win32") {
+-        tinymistPlatform = "pc-windows-msvc"
+-        ext = "zip"
+-      } else {
+-        tinymistPlatform = "unknown-linux-gnu"
+-        ext = "tar.gz"
+-      }
+-
+-      const assetName = `tinymist-${tinymistArch}-${tinymistPlatform}.${ext}`
++      const assetName = `tinymist-${tinymistArch}-unknown-linux-gnu.tar.gz`
+ 
+       const assets = release.assets ?? []
+       const asset = assets.find((a) => a.name === assetName)
+@@ -1918,28 +1774,17 @@ export const Tinymist: Info = {
+       const tempPath = path.join(Global.Path.bin, assetName)
+       if (downloadResponse.body) await Filesystem.writeStream(tempPath, downloadResponse.body)
+ 
+-      if (ext === "zip") {
+-        const ok = await Archive.extractZip(tempPath, Global.Path.bin)
+-          .then(() => true)
+-          .catch((error) => {
+-            return false
+-          })
+-        if (!ok) return
+-      } else {
+-        await run(["tar", "-xzf", tempPath, "--strip-components=1"], { cwd: Global.Path.bin })
+-      }
++      await run(["tar", "-xzf", tempPath, "--strip-components=1"], { cwd: Global.Path.bin })
+ 
+       await fs.rm(tempPath, { force: true })
+ 
+-      bin = path.join(Global.Path.bin, "tinymist" + (platform === "win32" ? ".exe" : ""))
++      bin = path.join(Global.Path.bin, "tinymist")
+ 
+       if (!(await Filesystem.exists(bin))) {
+         return
+       }
+ 
+-      if (platform !== "win32") {
+-        await fs.chmod(bin, 0o755).catch(() => {})
+-      }
++      await fs.chmod(bin, 0o755).catch(() => {})
+     }
+ 
+     return {
+diff --git a/packages/opencode/src/mcp/browser.ts b/packages/opencode/src/mcp/browser.ts
+index 68f4f59..a7eb900 100644
+--- a/packages/opencode/src/mcp/browser.ts
++++ b/packages/opencode/src/mcp/browser.ts
+@@ -28,7 +28,6 @@ const layer = Layer.succeed(
+           resume(Effect.fail(new Error(`Browser open failed with exit code ${code}`)))
+         }
+         subprocess.on("exit", onExit)
+-        // On Windows and WSL, open() can return only after the launcher has exited.
+         onExit(subprocess.exitCode)
+       })
+     }),
+diff --git a/packages/opencode/src/mcp/index.ts b/packages/opencode/src/mcp/index.ts
+index 05f12fa..2c36eee 100644
+--- a/packages/opencode/src/mcp/index.ts
++++ b/packages/opencode/src/mcp/index.ts
+@@ -417,7 +417,6 @@ const layer = Layer.effect(
+ 
+     const descendants = Effect.fnUntraced(
+       function* (pid: number) {
+-        if (process.platform === "win32") return [] as number[]
+         const pids: number[] = []
+         const queue = [pid]
+         for (let index = 0; index < queue.length; index++) {
+diff --git a/packages/opencode/src/permission/arity.ts b/packages/opencode/src/permission/arity.ts
+index cd4b0a7..78289ff 100644
+--- a/packages/opencode/src/permission/arity.ts
++++ b/packages/opencode/src/permission/arity.ts
+@@ -50,7 +50,6 @@ const ARITY: Record<string, number> = {
+   aws: 3, // aws s3 ls
+   az: 3, // az storage blob list
+   bazel: 2, // bazel build
+-  brew: 2, // brew install node
+   bun: 2, // bun install
+   "bun run": 3, // bun run dev
+   "bun x": 3, // bun x vite
+diff --git a/packages/opencode/src/provider/provider.ts b/packages/opencode/src/provider/provider.ts
+index 42fde1e..459706a 100644
+--- a/packages/opencode/src/provider/provider.ts
++++ b/packages/opencode/src/provider/provider.ts
+@@ -1874,7 +1874,7 @@ const layer = Layer.effect(
+         })()
+ 
+         // `installedPath` is a local entry path or an existing `file://` URL. Normalize
+-        // only path inputs so Node on Windows accepts the dynamic import.
++        // only path inputs so the dynamic import always resolves.
+         const importSpec = installedPath.startsWith("file://") ? installedPath : pathToFileURL(installedPath).href
+         const mod = await import(importSpec)
+ 
+diff --git a/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts b/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts
+index 5dded3a..864c3ad 100644
+--- a/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts
++++ b/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts
+@@ -6,7 +6,6 @@ import "@opencode-ai/core/account"
+ import "@/server/event"
+ import { Schema } from "effect"
+ import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+-import semver from "semver"
+ import { described } from "./metadata"
+ 
+ const GlobalHealth = Schema.Struct({
+@@ -48,29 +47,11 @@ const GlobalEventSchema = Schema.Struct({
+   ]),
+ }).annotate({ identifier: "GlobalEvent" })
+ 
+-export const GlobalUpgradeInput = Schema.Struct({
+-  target: Schema.String.check(
+-    Schema.makeFilter((value) => (semver.valid(value) === null ? "Expected a semantic version" : undefined)),
+-  ),
+-})
+-
+-const GlobalUpgradeResult = Schema.Union([
+-  Schema.Struct({
+-    success: Schema.Literal(true),
+-    version: Schema.String,
+-  }),
+-  Schema.Struct({
+-    success: Schema.Literal(false),
+-    error: Schema.String,
+-  }),
+-])
+-
+ export const GlobalPaths = {
+   health: "/global/health",
+   event: "/global/event",
+   config: "/global/config",
+   dispose: "/global/dispose",
+-  upgrade: "/global/upgrade",
+ } as const
+ 
+ export const GlobalApi = HttpApi.make("global").add(
+@@ -123,17 +104,6 @@ export const GlobalApi = HttpApi.make("global").add(
+           description: "Clean up and dispose all OpenCode instances, releasing all resources.",
+         }),
+       ),
+-      HttpApiEndpoint.post("upgrade", GlobalPaths.upgrade, {
+-        payload: GlobalUpgradeInput,
+-        success: described(GlobalUpgradeResult, "Upgrade result"),
+-        error: HttpApiError.BadRequest,
+-      }).annotateMerge(
+-        OpenApi.annotations({
+-          identifier: "global.upgrade",
+-          summary: "Upgrade opencode",
+-          description: "Upgrade opencode to the specified version.",
+-        }),
+-      ),
+     )
+     .annotateMerge(OpenApi.annotations({ title: "global", description: "Global server routes." })),
+ )
+diff --git a/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts b/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts
+index ac90903..fae404d 100644
+--- a/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts
++++ b/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts
+@@ -2,7 +2,6 @@ import { Config } from "@/config/config"
+ import { GlobalBus, type GlobalEvent as GlobalBusEvent } from "@/bus/global"
+ import { EffectBridge } from "@/effect/bridge"
+ import { EventV2 } from "@opencode-ai/core/event"
+-import { Installation } from "@/installation"
+ import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+ import { InstallationVersion } from "@opencode-ai/core/installation/version"
+ import { Effect, Queue } from "effect"
+@@ -11,7 +10,6 @@ import { HttpServerResponse } from "effect/unstable/http"
+ import { HttpApiBuilder } from "effect/unstable/httpapi"
+ import * as Sse from "effect/unstable/encoding/Sse"
+ import { RootHttpApi } from "../api"
+-import { GlobalUpgradeInput } from "../groups/global"
+ 
+ function eventData(data: unknown): Sse.Event {
+   return {
+@@ -60,7 +58,6 @@ function eventResponse() {
+ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handlers) =>
+   Effect.gen(function* () {
+     const config = yield* Config.Service
+-    const installation = yield* Installation.Service
+     const bridge = yield* EffectBridge.make()
+ 
+     const health = Effect.fn("GlobalHttpApi.health")(function* () {
+@@ -86,41 +83,11 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
+       return true
+     })
+ 
+-    const upgrade = Effect.fn("GlobalHttpApi.upgrade")(function* (ctx: { payload: typeof GlobalUpgradeInput.Type }) {
+-      const method = yield* installation.method()
+-      if (method === "unknown") {
+-        return HttpServerResponse.jsonUnsafe(
+-          { success: false as const, error: "Unknown installation method" },
+-          { status: 400 },
+-        )
+-      }
+-      const target = ctx.payload.target
+-      const result = yield* installation.upgrade(method, target).pipe(
+-        Effect.as({ success: true as const, version: target }),
+-        Effect.catch((err) =>
+-          Effect.succeed({
+-            success: false as const,
+-            error: err instanceof Error ? err.message : String(err),
+-          }),
+-        ),
+-      )
+-      if (!result.success) return HttpServerResponse.jsonUnsafe(result, { status: 500 })
+-      GlobalBus.emit("event", {
+-        directory: "global",
+-        payload: {
+-          type: Installation.Event.Updated.type,
+-          properties: { version: target },
+-        },
+-      })
+-      return HttpServerResponse.jsonUnsafe(result)
+-    })
+-
+     return handlers
+       .handle("health", health)
+       .handleRaw("event", event)
+       .handle("configGet", configGet)
+       .handle("configUpdate", configUpdate)
+       .handle("dispose", dispose)
+-      .handle("upgrade", upgrade)
+   }),
+ )
+diff --git a/packages/opencode/src/server/routes/instance/httpapi/server.ts b/packages/opencode/src/server/routes/instance/httpapi/server.ts
+index 94555ca..1ffae6e 100644
+--- a/packages/opencode/src/server/routes/instance/httpapi/server.ts
++++ b/packages/opencode/src/server/routes/instance/httpapi/server.ts
+@@ -15,7 +15,6 @@ import { Env } from "@/env"
+ import { EventV2Bridge } from "@/event-v2-bridge"
+ import { Format } from "@/format"
+ import { Git } from "@/git"
+-import { Installation } from "@/installation"
+ import { LSP } from "@/lsp/lsp"
+ import { MCP } from "@/mcp"
+ import { McpAuth } from "@/mcp/auth"
+@@ -256,7 +255,6 @@ const app = LayerNode.group([
+   Vcs.node,
+   Workspace.node,
+   Worktree.node,
+-  Installation.node,
+   SessionShare.node,
+   InstanceStore.node,
+   httpClient,
+diff --git a/packages/opencode/src/session/system.ts b/packages/opencode/src/session/system.ts
+index 61ab74d..665ae9d 100644
+--- a/packages/opencode/src/session/system.ts
++++ b/packages/opencode/src/session/system.ts
+@@ -79,7 +79,7 @@ const layer = Layer.effect(
+             `  Working directory: ${ctx.directory}`,
+             `  Workspace root folder: ${ctx.worktree}`,
+             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
+-            `  Platform: ${process.platform}`,
++            `  Platform: android`,
+             `  Today's date: ${new Date().toDateString()}`,
+             `</env>`,
+           ].join("\n"),
+diff --git a/packages/opencode/src/tool/apply_patch.ts b/packages/opencode/src/tool/apply_patch.ts
+index 3f89a63..fa1118c 100644
+--- a/packages/opencode/src/tool/apply_patch.ts
++++ b/packages/opencode/src/tool/apply_patch.ts
+@@ -286,7 +286,7 @@ export const ApplyPatchTool = Tool.define(
+       for (const change of fileChanges) {
+         if (change.type === "delete") continue
+         const target = change.movePath ?? change.filePath
+-        const block = LSP.Diagnostic.report(target, diagnostics[FSUtil.normalizePath(target)] ?? [])
++        const block = LSP.Diagnostic.report(target, diagnostics[target] ?? [])
+         if (!block) continue
+         const rel = path.relative(instance.worktree, target).replaceAll("\\", "/")
+         output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`
+diff --git a/packages/opencode/src/tool/edit.ts b/packages/opencode/src/tool/edit.ts
+index a92e472..73a70db 100644
+--- a/packages/opencode/src/tool/edit.ts
++++ b/packages/opencode/src/tool/edit.ts
+@@ -196,8 +196,7 @@ export const EditTool = Tool.define(
+           let output = "Edit applied successfully."
+           yield* lsp.touchFile(filePath, "document")
+           const diagnostics = yield* lsp.diagnostics()
+-          const normalizedFilePath = FSUtil.normalizePath(filePath)
+-          const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
++          const block = LSP.Diagnostic.report(filePath, diagnostics[filePath] ?? [])
+           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
+ 
+           return {
+diff --git a/packages/opencode/src/tool/external-directory.ts b/packages/opencode/src/tool/external-directory.ts
+index 4372db8..db31860 100644
+--- a/packages/opencode/src/tool/external-directory.ts
++++ b/packages/opencode/src/tool/external-directory.ts
+@@ -3,7 +3,6 @@ import { Effect } from "effect"
+ import { InstanceState } from "@/effect/instance-state"
+ import type * as Tool from "./tool"
+ import { containsPath } from "../project/instance-context"
+-import { FSUtil } from "@opencode-ai/core/fs-util"
+ 
+ type Kind = "file" | "directory"
+ 
+@@ -22,15 +21,12 @@ export const assertExternalDirectoryEffect = Effect.fn("Tool.assertExternalDirec
+   if (options?.bypass) return false
+ 
+   const ins = yield* InstanceState.context
+-  const full = process.platform === "win32" ? FSUtil.normalizePath(target) : target
++  const full = target
+   if (containsPath(full, ins)) return false
+ 
+   const kind = options?.kind ?? "file"
+   const dir = kind === "directory" ? full : path.dirname(full)
+-  const glob =
+-    process.platform === "win32"
+-      ? FSUtil.normalizePathPattern(path.join(dir, "*"))
+-      : path.join(dir, "*").replaceAll("\\", "/")
++  const glob = path.join(dir, "*").replaceAll("\\", "/")
+ 
+   yield* ctx.ask({
+     permission: "external_directory",
+diff --git a/packages/opencode/src/tool/read.ts b/packages/opencode/src/tool/read.ts
+index 678ed44..ac7c20a 100644
+--- a/packages/opencode/src/tool/read.ts
++++ b/packages/opencode/src/tool/read.ts
+@@ -185,8 +185,6 @@ export const ReadTool = Tool.define<
+         case ".zip":
+         case ".tar":
+         case ".gz":
+-        case ".exe":
+-        case ".dll":
+         case ".so":
+         case ".class":
+         case ".jar":
+@@ -206,7 +204,6 @@ export const ReadTool = Tool.define<
+         case ".obj":
+         case ".o":
+         case ".a":
+-        case ".lib":
+         case ".wasm":
+         case ".pyc":
+         case ".pyo":
+@@ -235,9 +232,6 @@ export const ReadTool = Tool.define<
+       if (!path.isAbsolute(filepath)) {
+         filepath = path.resolve(instance.directory, filepath)
+       }
+-      if (process.platform === "win32") {
+-        filepath = FSUtil.normalizePath(filepath)
+-      }
+       const title = path.relative(instance.worktree, filepath)
+ 
+       const stat = yield* fs.stat(filepath).pipe(
+diff --git a/packages/opencode/src/tool/registry.ts b/packages/opencode/src/tool/registry.ts
+index 9167cb3..55d89e3 100644
+--- a/packages/opencode/src/tool/registry.ts
++++ b/packages/opencode/src/tool/registry.ts
+@@ -188,7 +188,7 @@ const layer = Layer.effect(
+         for (const match of matches) {
+           const namespace = path.basename(match, path.extname(match))
+           // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
+-          // Import it as `file://` so Node on Windows accepts the dynamic import.
++          // Import it as `file://` so the dynamic import always resolves.
+           const mod = yield* Effect.promise(() => import(pathToFileURL(match).href))
+           for (const [id, def] of Object.entries(mod)) {
+             if (!isPluginTool(def)) continue
+diff --git a/packages/opencode/src/tool/shell.ts b/packages/opencode/src/tool/shell.ts
+index 1e4423e..383f317 100644
+--- a/packages/opencode/src/tool/shell.ts
++++ b/packages/opencode/src/tool/shell.ts
+@@ -25,7 +25,7 @@ import { BashArity } from "@/permission/arity"
+ export { Parameters } from "./shell/prompt"
+ 
+ const MAX_METADATA_LENGTH = 30_000
+-const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
++const CWD = new Set(["cd", "chdir", "popd", "pushd"])
+ const FILES = new Set([
+   ...CWD,
+   "rm",
+@@ -36,35 +36,7 @@ const FILES = new Set([
+   "chmod",
+   "chown",
+   "cat",
+-  // Leave PowerShell aliases out for now. Common ones like cat/cp/mv/rm/mkdir
+-  // already hit the entries above, and alias normalization should happen in one
+-  // place later so we do not risk double-prompting.
+-  "get-content",
+-  "set-content",
+-  "add-content",
+-  "copy-item",
+-  "move-item",
+-  "remove-item",
+-  "new-item",
+-  "rename-item",
+ ])
+-const CMD_FILES = new Set([
+-  "copy",
+-  "del",
+-  "dir",
+-  "erase",
+-  "md",
+-  "mkdir",
+-  "move",
+-  "rd",
+-  "ren",
+-  "rename",
+-  "rmdir",
+-  "type",
+-])
+-const FLAGS = new Set(["-destination", "-literalpath", "-path"])
+-const SWITCHES = new Set(["-confirm", "-debug", "-force", "-nonewline", "-recurse", "-verbose", "-whatif"])
+-
+ type Part = {
+   type: string
+   text: string
+@@ -93,14 +65,6 @@ function parts(node: Node) {
+   for (let i = 0; i < node.childCount; i++) {
+     const child = node.child(i)
+     if (!child) continue
+-    if (child.type === "command_elements") {
+-      for (let j = 0; j < child.childCount; j++) {
+-        const item = child.child(j)
+-        if (!item || item.type === "command_argument_sep" || item.type === "redirection") continue
+-        out.push({ type: item.type, text: item.text })
+-      }
+-      continue
+-    }
+     if (
+       child.type !== "command_name" &&
+       child.type !== "command_name_expr" &&
+@@ -138,43 +102,9 @@ function home(text: string) {
+   return text
+ }
+ 
+-function envValue(key: string) {
 -  if (process.platform !== "win32") return process.env[key]
 -  const name = Object.keys(process.env).find((item) => item.toLowerCase() === key.toLowerCase())
 -  return name ? process.env[name] : undefined
-+  return process.env[key]
+-}
+-
+-function auto(key: string, cwd: string, shell: string) {
+-  const name = key.toUpperCase()
+-  if (name === "HOME") return os.homedir()
+-  if (name === "PWD") return cwd
+-  if (name === "PSHOME") return path.dirname(shell)
+-}
+-
+-function expand(text: string, cwd: string, shell: string) {
+-  const out = unquote(text)
+-    .replace(/\$\{env:([^}]+)\}/gi, (_, key: string) => envValue(key) || "")
+-    .replace(/\$env:([A-Za-z_][A-Za-z0-9_]*)/gi, (_, key: string) => envValue(key) || "")
+-    .replace(/\$(HOME|PWD|PSHOME)(?=$|[\\/])/gi, (_, key: string) => auto(key, cwd, shell) || "")
+-  return home(out)
+-}
+-
+-function provider(text: string) {
+-  const match = text.match(/^([A-Za-z]+)::(.*)$/)
+-  if (match) {
+-    if (match[1].toLowerCase() !== "filesystem") return
+-    return match[2]
+-  }
+-  const prefix = text.match(/^([A-Za-z]+):(.*)$/)
+-  if (!prefix) return text
+-  if (prefix[1].length === 1) return text
+-  return
+-}
+-
+-function dynamic(text: string, ps: boolean) {
++function dynamic(text: string) {
+   if (text.startsWith("(") || text.startsWith("@(")) return true
+   if (text.includes("$(") || text.includes("${") || text.includes("`")) return true
+-  if (ps) return /\$(?!env:)/i.test(text)
+   return text.includes("$")
  }
  
- function auto(key: string, cwd: string, shell: string) {
-@@ -263,10 +261,7 @@ const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boole
+@@ -185,36 +115,11 @@ function prefix(text: string) {
+   return text.slice(0, match.index)
+ }
+ 
+-function pathArgs(list: Part[], ps: boolean, cmd = false) {
+-  if (!ps) {
+-    return list
+-      .slice(1)
+-      .filter(
+-        (item) =>
+-          !item.text.startsWith("-") &&
+-          !(cmd && item.text.startsWith("/")) &&
+-          !(list[0]?.text === "chmod" && item.text.startsWith("+")),
+-      )
+-      .map((item) => item.text)
+-  }
+-
+-  const out: string[] = []
+-  let want = false
+-  for (const item of list.slice(1)) {
+-    if (want) {
+-      out.push(item.text)
+-      want = false
+-      continue
+-    }
+-    if (item.type === "command_parameter") {
+-      const flag = item.text.toLowerCase()
+-      if (SWITCHES.has(flag)) continue
+-      want = FLAGS.has(flag)
+-      continue
+-    }
+-    out.push(item.text)
+-  }
+-  return out
++function pathArgs(list: Part[]) {
++  return list
++    .slice(1)
++    .filter((item) => !item.text.startsWith("-") && !(list[0]?.text === "chmod" && item.text.startsWith("+")))
++    .map((item) => item.text)
+ }
+ 
+ function preview(text: string) {
+@@ -254,8 +159,8 @@ function tail(text: string, maxLines: number, maxBytes: number) {
+   }
+ }
+ 
+-const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
+-  const tree = yield* Effect.promise(() => parser().then((p) => (ps ? p.ps : p.bash).parse(command)))
++const parse = Effect.fn("ShellTool.parse")(function* (command: string) {
++  const tree = yield* Effect.promise(() => parser().then((p) => p.bash.parse(command)))
+   if (!tree) throw new Error("Failed to parse command")
+   return tree
+ })
+@@ -263,10 +168,7 @@ const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boole
  const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, input: { command: string }) {
    if (scan.dirs.size > 0) {
      const directories = Array.from(scan.dirs)
@@ -594,7 +3262,7 @@ index 1e4423e..b7bbdef 100644
      yield* ctx.ask({
        permission: "external_directory",
        patterns: globs,
-@@ -291,21 +286,12 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
+@@ -291,21 +193,12 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
  })
  
  function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
@@ -617,7 +3285,27 @@ index 1e4423e..b7bbdef 100644
    })
  }
  const parser = lazy(async () => {
-@@ -346,23 +332,7 @@ export const ShellTool = Tool.define(
+@@ -322,17 +215,11 @@ const parser = lazy(async () => {
+   const { default: bashWasm } = await import("tree-sitter-bash/tree-sitter-bash.wasm" as string, {
+     with: { type: "wasm" },
+   })
+-  const { default: psWasm } = await import("tree-sitter-powershell/tree-sitter-powershell.wasm" as string, {
+-    with: { type: "wasm" },
+-  })
+   const bashPath = resolveWasm(bashWasm)
+-  const psPath = resolveWasm(psWasm)
+-  const [bashLanguage, psLanguage] = await Promise.all([Language.load(bashPath), Language.load(psPath)])
++  const bashLanguage = await Language.load(bashPath)
+   const bash = new Parser()
+   bash.setLanguage(bashLanguage)
+-  const ps = new Parser()
+-  ps.setLanguage(psLanguage)
+-  return { bash, ps }
++  return { bash }
+ })
+ 
+ export const ShellTool = Tool.define(
+@@ -346,40 +233,20 @@ export const ShellTool = Tool.define(
      const flags = yield* RuntimeFlags.Service
      const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
  
@@ -642,25 +3330,58 @@ index 1e4423e..b7bbdef 100644
        return path.resolve(root, text)
      })
  
-@@ -372,7 +342,7 @@ export const ShellTool = Tool.define(
-       if (!file || dynamic(file, ps)) return
-       const next = ps ? provider(file) : file
-       if (!next) return
+-    const argPath = Effect.fn("ShellTool.argPath")(function* (arg: string, cwd: string, ps: boolean, shell: string) {
+-      const text = ps ? expand(arg, cwd, shell) : home(unquote(arg))
++    const argPath = Effect.fn("ShellTool.argPath")(function* (arg: string, cwd: string) {
++      const text = home(unquote(arg))
+       const file = text && prefix(text)
+-      if (!file || dynamic(file, ps)) return
+-      const next = ps ? provider(file) : file
+-      if (!next) return
 -      return yield* resolvePath(next, cwd, shell)
-+      return yield* resolvePath(next, cwd)
++      if (!file || dynamic(file)) return
++      return yield* resolvePath(file, cwd)
      })
  
      const collect = Effect.fn("ShellTool.collect")(function* (
-@@ -600,7 +570,7 @@ export const ShellTool = Tool.define(
+       root: Node,
+       cwd: string,
+-      ps: boolean,
+-      shell: string,
+       instance: InstanceContext,
+     ) {
+       const scan: Scan = {
+@@ -387,16 +254,14 @@ export const ShellTool = Tool.define(
+         patterns: new Set<string>(),
+         always: new Set<string>(),
+       }
+-      const shellKind = ShellID.toKind(Shell.name(shell))
+-
+       for (const node of commands(root)) {
+         const command = parts(node)
+         const tokens = command.map((item) => item.text)
+-        const cmd = ps || shellKind === "cmd" ? tokens[0]?.toLowerCase() : tokens[0]
++        const cmd = tokens[0]
+ 
+-        if (cmd && (FILES.has(cmd) || (shellKind === "cmd" && CMD_FILES.has(cmd)))) {
+-          for (const arg of pathArgs(command, ps, shellKind === "cmd")) {
+-            const resolved = yield* argPath(arg, cwd, ps, shell)
++        if (cmd && FILES.has(cmd)) {
++          for (const arg of pathArgs(command)) {
++            const resolved = yield* argPath(arg, cwd)
+             yield* Effect.logInfo("resolved path", { arg, resolved })
+             if (!resolved || containsPath(resolved, instance)) continue
+             const dir = (yield* fs.isDir(resolved)) ? resolved : path.dirname(resolved)
+@@ -600,7 +465,7 @@ export const ShellTool = Tool.define(
          const shell = Shell.acceptable(cfg.shell)
          const name = Shell.name(shell)
          const limits = yield* trunc.limits()
 -        const prompt = ShellPrompt.render(name, process.platform, limits, defaultTimeoutMs)
-+        const prompt = ShellPrompt.render(name, "linux", limits, defaultTimeoutMs)
++        const prompt = ShellPrompt.render(name, limits, defaultTimeoutMs)
          yield* Effect.logInfo("shell tool using shell", { shell })
  
          return {
-@@ -610,7 +580,7 @@ export const ShellTool = Tool.define(
+@@ -610,19 +475,18 @@ export const ShellTool = Tool.define(
              Effect.gen(function* () {
                const instanceCtx = yield* InstanceState.context
                const cwd = params.workdir
@@ -669,6 +3390,287 @@ index 1e4423e..b7bbdef 100644
                  : instanceCtx.directory
                if (params.timeout !== undefined && params.timeout < 0) {
                  throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
+               }
+               const timeout = params.timeout ?? defaultTimeoutMs
+-              const ps = Shell.ps(shell)
+               yield* Effect.scoped(
+                 Effect.gen(function* () {
+-                  const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
++                  const tree = yield* Effect.acquireRelease(parse(params.command), (tree) =>
+                     Effect.sync(() => tree.delete()),
+                   )
+-                  const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
++                  const scan = yield* collect(tree.rootNode, cwd, instanceCtx)
+                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
+                   yield* ask(ctx, scan, params)
+                 }),
+diff --git a/packages/opencode/src/tool/shell/id.ts b/packages/opencode/src/tool/shell/id.ts
+index 061253f..dc59dc7 100644
+--- a/packages/opencode/src/tool/shell/id.ts
++++ b/packages/opencode/src/tool/shell/id.ts
+@@ -1,16 +1,3 @@
+-const kinds = ["bash", "pwsh", "powershell", "cmd"] as const
+-export type Kind = (typeof kinds)[number]
+-
+-const shellKinds = new Set<string>(kinds)
+-
+-function isKind(value: string): value is Kind {
+-  return shellKinds.has(value)
+-}
+-
+-export function toKind(value: string): Kind {
+-  return isKind(value) ? value : "bash"
+-}
+-
+ // Keep the exposed tool ID and permission key as "bash" for compatibility with
+ // existing plugins, users, and saved permissions. Rename with opencode 2.0.
+ export const ToolID = "bash"
+diff --git a/packages/opencode/src/tool/shell/prompt.ts b/packages/opencode/src/tool/shell/prompt.ts
+index b576b77..ea2ef98 100644
+--- a/packages/opencode/src/tool/shell/prompt.ts
++++ b/packages/opencode/src/tool/shell/prompt.ts
+@@ -4,9 +4,6 @@ import { PositiveInt } from "@opencode-ai/core/schema"
+ import { Global } from "@opencode-ai/core/global"
+ import { ShellID } from "./id"
+ 
+-const PS = new Set(["powershell", "pwsh"])
+-const CMD = new Set(["cmd"])
+-
+ export type Limits = {
+   maxLines: number
+   maxBytes: number
+@@ -33,47 +30,7 @@ function renderPrompt(template: string, values: Record<string, string>) {
+   })
+ }
+ 
+-function shellDisplayName(name: string) {
+-  if (name === "pwsh") return "PowerShell (7+)"
+-  if (name === "powershell") return "Windows PowerShell (5.1)"
+-  if (name === "cmd") return "cmd.exe"
+-  return name
+-}
+-
+-function powershellNotes(name: string) {
+-  if (name === "pwsh") {
+-    return `# PowerShell (7+) shell notes
+-- This cross-platform shell supports pipeline chain operators (\`&&\` and \`||\`).
+-- Use double quotes for interpolated strings (\`"Hello $name"\`), single quotes for verbatim strings.
+-- Prefer full cmdlet names like \`Get-ChildItem\`, \`Set-Content\`, \`Remove-Item\`, and \`New-Item\` over aliases.
+-- Use \`$(...)\` for subexpressions. Use \`@(...)\` for array expressions.
+-- To call a native executable whose path contains spaces, use the call operator: \`& "path/to/exe" args\`.
+-- Escape special characters with the PowerShell backtick character.`
+-  }
+-  if (name === "powershell") {
+-    return `# Windows PowerShell (5.1) shell notes
+-- Use \`cmd1; if ($?) { cmd2 }\` to chain dependent commands.
+-- Use double quotes for interpolated strings (\`"Hello $name"\`), single quotes for verbatim strings.
+-- Prefer full cmdlet names like \`Get-ChildItem\`, \`Set-Content\`, \`Remove-Item\`, and \`New-Item\` over aliases.
+-- Use \`$(...)\` for subexpressions. Use \`@(...)\` for array expressions.
+-- To call a native executable whose path contains spaces, use the call operator: \`& "path/to/exe" args\`.
+-- Escape special characters with the PowerShell backtick character.`
+-  }
+-  return ""
+-}
+-
+-function chainGuidance(name: string) {
+-  if (name === "powershell") {
+-    return "If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell (5.1) does not support it. Use PowerShell conditionals such as `cmd1; if ($?) { cmd2 }` when later commands must depend on earlier success."
+-  }
+-  if (PS.has(name)) {
+-    return "If the commands depend on each other and must run sequentially, use a single bash tool call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like New-Item before Copy-Item, Write before bash for git operations, or git add before git commit), run these operations sequentially instead."
+-  }
+-  if (CMD.has(name)) {
+-    return "If the commands depend on each other and must run sequentially, use a single bash tool call with `&&` to chain them together (e.g., `mkdir out && dir out`). For instance, if one operation must complete before another starts, run these operations sequentially instead."
+-  }
+-  return "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
+-}
++const CHAIN = "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
+ 
+ function bashCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number) {
+   return `Before executing the command, please follow these steps:
+@@ -118,148 +75,13 @@ Usage notes:
+     </bad-example>`
+ }
+ 
+-function powershellCommandSection(
+-  name: string,
+-  chain: string,
+-  pathSep: string,
+-  limits: Limits,
+-  defaultTimeoutMs: number,
+-) {
+-  return `${powershellNotes(name)}
+-
+-Before executing the command, please follow these steps:
+-
+-1. Directory Verification:
+-   - If the command will create new directories or files, first use \`Test-Path -LiteralPath <parent>\` to verify the parent directory exists and is the correct location
+-   - For example, before creating \`foo${pathSep}bar\`, first use \`Test-Path -LiteralPath "foo"\` to check that \`foo\` exists and is the intended parent directory
+-
+-2. Command Execution:
+-   - Always quote file paths that contain spaces with double quotes (e.g., Remove-Item -LiteralPath "path with spaces${pathSep}file.txt")
+-   - Examples of proper quoting:
+-     - New-Item -ItemType Directory -Path "My Documents" (correct)
+-     - New-Item -ItemType Directory -Path My Documents (incorrect - path is split)
+-     - & "path with spaces${pathSep}script.ps1" (correct)
+-     - path with spaces${pathSep}script.ps1 (incorrect - path is split and not invoked)
+-   - After ensuring proper quoting, execute the command.
+-   - Capture the output of the command.
+-
+-Usage notes:
+-  - The command argument is required.
+-  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
+-  - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
+-
+-  - Avoid using Shell with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
+-    - File search: Use Glob (NOT Get-ChildItem)
+-    - Content search: Use Grep (NOT Select-String)
+-    - Read files: Use Read (NOT Get-Content)
+-    - Edit files: Use Edit (NOT Set-Content)
+-    - Write files: Use Write (NOT Set-Content/Out-File or here-strings)
+-    - Communication: Output text directly (NOT Write-Output/Write-Host)
+-  - When issuing multiple commands:
+-    - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "git status" and "git diff", send a single message with two bash tool calls in parallel.
+-    - ${chain}
+-    - Use \`;\` only when you need to run commands sequentially but don't care if earlier commands fail
+-    - DO NOT use newlines to separate commands (newlines are ok in quoted strings)
+-  - AVOID changing directories inside the command. Use the \`workdir\` parameter to change directories instead.
+-    <good-example>
+-    Use workdir="project${pathSep}subdir" with command: pytest tests
+-    </good-example>
+-    <bad-example>
+-    ${name === "powershell" ? `Set-Location -LiteralPath "project${pathSep}subdir"; if ($?) { pytest tests }` : `Set-Location -LiteralPath "project${pathSep}subdir" && pytest tests`}
+-    </bad-example>`
+-}
+-
+-function cmdCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number) {
+-  return `# cmd.exe shell notes
+-- Use double quotes for paths with spaces.
+-- Use %VAR% for environment variables.
+-- Use \`if exist\` for existence checks.
+-- Use \`call\` when invoking batch files from another batch-style command.
+-
+-Before executing the command, please follow these steps:
+-
+-1. Directory Verification:
+-   - If the command will create new directories or files, first use \`if exist\` to verify the parent directory exists and is the correct location
+-   - For example, before creating \`foo\\bar\`, first use \`if exist "foo\\" dir "foo"\` to check that \`foo\` exists and is the intended parent directory
+-
+-2. Command Execution:
+-   - Always quote file paths that contain spaces with double quotes (e.g., del "path with spaces\\file.txt")
+-   - Examples of proper quoting:
+-     - mkdir "My Documents" (correct)
+-     - mkdir My Documents (incorrect - path is split)
+-     - call "path with spaces\\script.bat" (correct)
+-     - path with spaces\\script.bat (incorrect - path is split and not invoked correctly)
+-   - After ensuring proper quoting, execute the command.
+-   - Capture the output of the command.
+-
+-Usage notes:
+-  - The command argument is required.
+-  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
+-  - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`more\` or other pagination commands to limit output; the full output will already be captured to a file for more precise searching.
+-
+-  - Avoid using Shell with cmd.exe file/content commands unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
+-    - File search: Use Glob (NOT dir /s)
+-    - Content search: Use Grep (NOT findstr)
+-    - Read files: Use Read (NOT type)
+-    - Edit files: Use Edit (NOT copy)
+-    - Write files: Use Write (NOT echo > file)
+-    - Communication: Output text directly (NOT echo)
+-  - When issuing multiple commands:
+-    - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "dir" and "where cmd", send a single message with two bash tool calls in parallel.
+-    - ${chain}
+-    - Use \`&\` only when you need to run commands sequentially but don't care if earlier commands fail
+-    - DO NOT use newlines to separate commands (newlines are ok in quoted strings)
+-  - AVOID changing directories inside the command. Use the \`workdir\` parameter to change directories instead.
+-    <good-example>
+-    Use workdir="project\\subdir" with command: dir
+-    </good-example>
+-    <bad-example>
+-    cd /d "project\\subdir" && dir
+-    </bad-example>`
+-}
+-
+-function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number) {
+-  const isPowerShell = PS.has(name)
+-  const chain = chainGuidance(name)
+-  if (CMD.has(name)) {
+-    return {
+-      intro: `Executes a given ${shellDisplayName(name)} command with optional timeout, ensuring proper handling and security measures.`,
+-      workdirSection:
+-        "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID changing directories inside the command - use `workdir` instead.",
+-      commandSection: cmdCommandSection(chain, limits, defaultTimeoutMs),
+-      gitCommands: "git commands",
+-      gitCommandRestriction: "git commands",
+-      createPrInstruction: "Create PR using a temporary body file so cmd.exe quoting stays simple.",
+-      createPrExample: `(\n  echo ## Summary\n  echo - ^<1-3 bullet points^>\n) > pr-body.txt\ngh pr create --title "the pr title" --body-file pr-body.txt`,
+-    }
+-  }
+-  if (isPowerShell) {
+-    return {
+-      intro: `Executes a given ${shellDisplayName(name)} command with optional timeout, ensuring proper handling and security measures.`,
+-      workdirSection:
+-        "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID changing directories inside the command - use `workdir` instead.",
+-      commandSection: powershellCommandSection(
+-        name,
+-        chain,
+-        platform === "win32" ? "\\" : "/",
+-        limits,
+-        defaultTimeoutMs,
+-      ),
+-      gitCommands: "git commands",
+-      gitCommandRestriction: "git commands",
+-      createPrInstruction: "Create PR using gh pr create with a PowerShell here-string to pass the body correctly.",
+-      createPrExample: `gh pr create --title "the pr title" --body @'
+-## Summary
+-- <1-3 bullet points>
+-'@`,
+-    }
+-  }
++function profile(name: string, limits: Limits, defaultTimeoutMs: number) {
+   return {
+     intro:
+       "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.",
+     workdirSection:
+       "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID using `cd <directory> && <command>` patterns - use `workdir` instead.",
+-    commandSection: bashCommandSection(chain, limits, defaultTimeoutMs),
++    commandSection: bashCommandSection(CHAIN, limits, defaultTimeoutMs),
+     gitCommands: "bash commands",
+     gitCommandRestriction: "git bash commands",
+     createPrInstruction:
+@@ -270,12 +92,12 @@ function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaul
+   }
+ }
+ 
+-export function render(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number) {
+-  const selected = profile(name, platform, limits, defaultTimeoutMs)
++export function render(name: string, limits: Limits, defaultTimeoutMs: number) {
++  const selected = profile(name, limits, defaultTimeoutMs)
+   return {
+     description: renderPrompt(DESCRIPTION, {
+       intro: selected.intro,
+-      os: platform,
++      os: "android",
+       shell: name,
+       tmp: Global.Path.tmp,
+       workdirSection: selected.workdirSection,
+diff --git a/packages/opencode/src/tool/write.ts b/packages/opencode/src/tool/write.ts
+index 37be6d8..d9fc8ed 100644
+--- a/packages/opencode/src/tool/write.ts
++++ b/packages/opencode/src/tool/write.ts
+@@ -74,10 +74,9 @@ export const WriteTool = Tool.define(
+           let output = "Wrote file successfully."
+           yield* lsp.touchFile(filepath, "document")
+           const diagnostics = yield* lsp.diagnostics()
+-          const normalizedFilepath = FSUtil.normalizePath(filepath)
+           let projectDiagnosticsCount = 0
+           for (const [file, issues] of Object.entries(diagnostics)) {
+-            const current = file === normalizedFilepath
++            const current = file === filepath
+             if (!current && projectDiagnosticsCount >= MAX_PROJECT_DIAGNOSTICS_FILES) continue
+             const block = LSP.Diagnostic.report(current ? filepath : file, issues)
+             if (!block) continue
 diff --git a/packages/opencode/src/util/archive.ts b/packages/opencode/src/util/archive.ts
 index 8fc5497..f1ee80a 100644
 --- a/packages/opencode/src/util/archive.ts
@@ -691,7 +3693,7 @@ index 8fc5497..f1ee80a 100644
  }
  
 diff --git a/packages/opencode/src/util/filesystem.ts b/packages/opencode/src/util/filesystem.ts
-index 78a8917..b9a14ba 100644
+index 78a8917..7b36999 100644
 --- a/packages/opencode/src/util/filesystem.ts
 +++ b/packages/opencode/src/util/filesystem.ts
 @@ -1,7 +1,7 @@
@@ -703,7 +3705,7 @@ index 78a8917..b9a14ba 100644
  import { Readable } from "stream"
  import { pipeline } from "stream/promises"
  import { Glob } from "@opencode-ai/core/util/glob"
-@@ -107,28 +107,12 @@ export async function mimeType(p: string): Promise<string> {
+@@ -107,39 +107,14 @@ export async function mimeType(p: string): Promise<string> {
    return lookup(p) || "application/octet-stream"
  }
  
@@ -712,7 +3714,7 @@ index 78a8917..b9a14ba 100644
 - * This is needed because Windows paths are case-insensitive but LSP servers
 - * may return paths with different casing than what we send them.
 - */
- export function normalizePath(p: string): string {
+-export function normalizePath(p: string): string {
 -  if (process.platform !== "win32") return p
 -  const resolved = win32.normalize(win32.resolve(windowsPath(p)))
 -  try {
@@ -720,24 +3722,37 @@ index 78a8917..b9a14ba 100644
 -  } catch {
 -    return resolved
 -  }
-+  return p
- }
- 
- export function normalizePathPattern(p: string): string {
+-}
+-
+-export function normalizePathPattern(p: string): string {
 -  if (process.platform !== "win32") return p
 -  if (p === "*") return p
 -  const match = p.match(/^(.*)[\\/]\*$/)
 -  if (!match) return normalizePath(p)
 -  const dir = /^[A-Za-z]:$/.test(match[1]) ? match[1] + "\\" : match[1]
 -  return join(normalizePath(dir), "*")
-+  return p
+-}
+-
+-// We cannot rely on path.resolve() here because git.exe may come from Git Bash, Cygwin, or MSYS2, so we need to translate these paths at the boundary.
+ // Also resolves symlinks so that callers using the result as a cache key
+ // always get the same canonical path for a given physical directory.
+ export function resolve(p: string): string {
+-  const resolved = pathResolve(windowsPath(p))
++  const resolved = pathResolve(p)
+   try {
+-    return normalizePath(realpathSync(resolved))
++    return realpathSync(resolved)
+   } catch (e) {
+-    if (isEnoent(e)) return normalizePath(resolved)
++    if (isEnoent(e)) return resolved
+     throw e
+   }
+ }
+@@ -150,19 +125,6 @@ export function resolveFilePath(root: string, file: string): string {
+   return pathResolve(root, raw)
  }
  
- // We cannot rely on path.resolve() here because git.exe may come from Git Bash, Cygwin, or MSYS2, so we need to translate these paths at the boundary.
-@@ -151,17 +135,7 @@ export function resolveFilePath(root: string, file: string): string {
- }
- 
- export function windowsPath(p: string): string {
+-export function windowsPath(p: string): string {
 -  if (process.platform !== "win32") return p
 -  return (
 -    p
@@ -749,10 +3764,10 @@ index 78a8917..b9a14ba 100644
 -      // WSL paths are typically /mnt/<drive>/...
 -      .replace(/^\/mnt\/([a-zA-Z])(?:\/|$)/, (_, drive) => `${drive.toUpperCase()}:/`)
 -  )
-+  return p
- }
+-}
  export function overlaps(a: string, b: string) {
    return FSUtil.overlaps(a, b)
+ }
 diff --git a/packages/opencode/src/util/process.ts b/packages/opencode/src/util/process.ts
 index 173210f..657c3c3 100644
 --- a/packages/opencode/src/util/process.ts
@@ -782,3 +3797,1097 @@ index 173210f..657c3c3 100644
    proc.kill()
  }
  
+diff --git a/packages/opencode/src/util/wildcard.ts b/packages/opencode/src/util/wildcard.ts
+index b2affbf..1cf94d4 100644
+--- a/packages/opencode/src/util/wildcard.ts
++++ b/packages/opencode/src/util/wildcard.ts
+@@ -14,8 +14,7 @@ export function match(str: string, pattern: string) {
+     escaped = escaped.slice(0, -3) + "( .*)?"
+   }
+ 
+-  const flags = process.platform === "win32" ? "si" : "s"
+-  return new RegExp("^" + escaped + "$", flags).test(str)
++  return new RegExp("^" + escaped + "$", "s").test(str)
+ }
+ 
+ export function all(input: string, patterns: Record<string, any>) {
+diff --git a/packages/opencode/src/worktree/index.ts b/packages/opencode/src/worktree/index.ts
+index a0c43ed..e32570a 100644
+--- a/packages/opencode/src/worktree/index.ts
++++ b/packages/opencode/src/worktree/index.ts
+@@ -296,7 +296,7 @@ const layer: Layer.Layer<
+       const abs = pathSvc.resolve(input)
+       const real = yield* fs.realPath(abs).pipe(Effect.catch(() => Effect.succeed(abs)))
+       const normalized = pathSvc.normalize(real)
+-      return process.platform === "win32" ? normalized.toLowerCase() : normalized
++      return normalized
+     })
+ 
+     function parseWorktreeList(text: string) {
+@@ -369,7 +369,7 @@ const layer: Layer.Layer<
+       return Effect.tryPromise({
+         try: async () => {
+           const fsp = await import("fs/promises")
+-          const attempts = process.platform === "win32" ? 50 : 5
++          const attempts = 5
+           for (const attempt of Array.from({ length: attempts }, (_, i) => i)) {
+             try {
+               await fsp.rm(target, { recursive: true, force: true })
+@@ -393,7 +393,7 @@ const layer: Layer.Layer<
+ 
+       const directory = yield* canonical(input.directory)
+ 
+-      // Preserve the loaded path casing for the store cache; `directory` is lowercased on Windows.
++      // Preserve the loaded path casing for the store cache.
+       if (directory !== (yield* canonical(ctx.worktree))) yield* store.disposeDirectory(input.directory)
+ 
+       const list = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
+@@ -413,7 +413,7 @@ const layer: Layer.Layer<
+         return true
+       }
+ 
+-      // Git may return the original casing when a caller supplied a normalized Windows path.
++      // Git may return the original casing for the same directory.
+       yield* store.disposeDirectory(entry.path)
+       yield* stopFsmonitor(entry.path)
+       const removed = yield* git(["worktree", "remove", "--force", entry.path], { cwd: ctx.worktree })
+@@ -460,7 +460,7 @@ const layer: Layer.Layer<
+ 
+     const runStartCommand = Effect.fnUntraced(
+       function* (directory: string, cmd: string) {
+-        const [shell, args] = process.platform === "win32" ? ["cmd", ["/c", cmd]] : ["bash", ["-lc", cmd]]
++        const [shell, args] = ["bash", ["-lc", cmd]]
+         const result = yield* appProcess.run(
+           ChildProcess.make(shell, args as string[], { cwd: directory, extendEnv: true, stdin: "ignore" }),
+         )
+diff --git a/packages/tui/package.json b/packages/tui/package.json
+index b90767c..f244e7e 100644
+--- a/packages/tui/package.json
++++ b/packages/tui/package.json
+@@ -28,7 +28,6 @@
+     "./editor": "./src/editor.ts",
+     "./editor-zed": "./src/editor-zed.ts",
+     "./runtime": "./src/runtime.tsx",
+-    "./terminal-win32": "./src/terminal-win32.ts",
+     "./config/keybind": "./src/config/keybind.ts",
+     "./keymap": "./src/keymap.tsx",
+     "./prompt/display": "./src/prompt/display.ts",
+diff --git a/packages/tui/src/app.tsx b/packages/tui/src/app.tsx
+index 1b21aaf..d1bcced 100644
+--- a/packages/tui/src/app.tsx
++++ b/packages/tui/src/app.tsx
+@@ -24,7 +24,7 @@ import {
+   Show,
+   on,
+ } from "solid-js"
+-import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
++import { TuiPathsProvider, TuiStartupProvider, useTuiStartup } from "./context/runtime"
+ import { DialogProvider, useDialog } from "./ui/dialog"
+ import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
+ import { ErrorComponent } from "./component/error-component"
+@@ -59,7 +59,6 @@ import { PromptStashProvider } from "./component/prompt/stash"
+ import { ToastProvider, useToast } from "./ui/toast"
+ import { isDefaultTitle } from "./util/session"
+ import { KVProvider, useKV } from "./context/kv"
+-import { UpdateNotificationProvider, useUpdateNotification, type UpdateSource } from "./context/update-notification"
+ import * as Model from "./util/model"
+ import { ArgsProvider, useArgs, type Args } from "./context/args"
+ import { openUrl } from "@opencode-ai/core/open"
+@@ -82,7 +81,6 @@ import type { EventSource } from "./context/sdk"
+ import { DialogVariant } from "./component/dialog-variant"
+ import { createTuiAttention } from "./attention"
+ import * as TuiAudio from "./audio"
+-import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
+ import { destroyRenderer } from "./util/renderer"
+ import { cliErrorMessage, errorFormat } from "./util/error"
+ 
+@@ -148,7 +146,6 @@ export type TuiInput = {
+   headers?: RequestInit["headers"]
+   events?: EventSource
+   pluginHost: TuiPluginHost
+-  updater?: UpdateSource
+ }
+ 
+ function errorMessage(error: unknown) {
+@@ -194,7 +191,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+             destroyRenderer(renderer)
+           }),
+       )
+-      win32DisableProcessedInput()
+       const keymap = createDefaultOpenTuiKeymap(renderer)
+       yield* Effect.acquireRelease(
+         Effect.sync(() => registerOpencodeKeymap(keymap, renderer, input.config)),
+@@ -244,17 +240,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+                       worktree: global.data + "/worktree",
+                     }}
+                   >
+-                    <TuiTerminalEnvironmentProvider
+-                      value={{
+-                        platform: process.platform,
+-                        multiplexer: process.env.TMUX ? "tmux" : process.env.STY ? "screen" : undefined,
+-                        displayServer: process.env.WAYLAND_DISPLAY
+-                          ? "wayland"
+-                          : process.env.DISPLAY
+-                            ? "x11"
+-                            : undefined,
+-                      }}
+-                    >
+                       <TuiStartupProvider
+                         value={{
+                           initialRoute: process.env.OPENCODE_ROUTE ? JSON.parse(process.env.OPENCODE_ROUTE) : undefined,
+@@ -298,12 +283,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+                                                               <PromptRefProvider>
+                                                                 <EditorContextProvider>
+                                                                   <LocationProvider>
+-                                                                    <UpdateNotificationProvider updater={input.updater}>
+                                                                       <App
+                                                                         onSnapshot={input.onSnapshot}
+                                                                         pluginHost={input.pluginHost}
+                                                                       />
+-                                                                    </UpdateNotificationProvider>
+                                                                   </LocationProvider>
+                                                                 </EditorContextProvider>
+                                                               </PromptRefProvider>
+@@ -327,7 +310,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+                           </OpencodeKeymapProvider>
+                         </ClipboardProvider>
+                       </TuiStartupProvider>
+-                    </TuiTerminalEnvironmentProvider>
+                   </TuiPathsProvider>
+                 </ErrorBoundary>
+               </EpilogueProvider>
+@@ -340,7 +322,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+     }),
+   )
+   yield* Effect.sync(() => {
+-    win32FlushInputBuffer()
+     if (result.reason !== undefined) {
+       process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
+       process.exitCode = 1
+@@ -371,7 +352,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
+   const pluginRuntime = usePluginRuntime()
+   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
+   const clipboard = useClipboard()
+-  const update = useUpdateNotification()
+ 
+   const api = createTuiApi(
+     createTuiApiAdapters({
+@@ -757,17 +737,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
+         },
+         category: "System",
+       },
+-      ...(update.open
+-        ? [
+-            {
+-              name: "opencode.update",
+-              title: "Update OpenCode",
+-              slashName: "update",
+-              run: () => update.open?.(),
+-              category: "System",
+-            },
+-          ]
+-        : []),
+       {
+         name: "opencode.debug",
+         title: "View debug info",
+@@ -868,7 +837,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
+         title: "Suspend terminal",
+         category: "System",
+         hidden: true,
+-        enabled: process.platform !== "win32",
++        enabled: true,
+         run: () => {
+           renderer.suspend()
+           process.once("SIGCONT", () => renderer.resume())
+diff --git a/packages/tui/src/clipboard.ts b/packages/tui/src/clipboard.ts
+index 2ae29da..caf606c 100644
+--- a/packages/tui/src/clipboard.ts
++++ b/packages/tui/src/clipboard.ts
+@@ -1,10 +1,4 @@
+-import { execFile, spawn } from "node:child_process"
+-import { readFile, rm } from "node:fs/promises"
+-import { platform, release, tmpdir } from "node:os"
+-import path from "node:path"
+-import { promisify } from "node:util"
+-
+-const exec = promisify(execFile)
++import { spawn } from "node:child_process"
+ 
+ function command(command: string, args: string[] = [], input?: string) {
+   return new Promise<Buffer>((resolve, reject) => {
+@@ -28,70 +22,12 @@ function writeOsc52(text: string) {
+ }
+ 
+ export async function read() {
+-  if (platform() === "darwin") {
+-    const file = path.join(tmpdir(), "opencode-clipboard.png")
+-    try {
+-      await exec("osascript", [
+-        "-e",
+-        'set imageData to the clipboard as "PNGf"',
+-        "-e",
+-        `set fileRef to open for access POSIX file "${file}" with write permission`,
+-        "-e",
+-        "set eof fileRef to 0",
+-        "-e",
+-        "write imageData to fileRef",
+-        "-e",
+-        "close access fileRef",
+-      ])
+-      return { data: (await readFile(file)).toString("base64"), mime: "image/png" }
+-    } catch {
+-      // Fall through to text clipboard.
+-    } finally {
+-      await rm(file, { force: true }).catch(() => {})
+-    }
+-  }
+-
+-  if (platform() === "win32" || release().includes("WSL")) {
+-    const script =
+-      "Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [System.Convert]::ToBase64String($ms.ToArray()) }"
+-    const image = await command("powershell.exe", ["-NonInteractive", "-NoProfile", "-command", script]).catch(() =>
+-      Buffer.alloc(0),
+-    )
+-    if (image.length) return { data: image.toString().trim(), mime: "image/png" }
+-  }
+-
+-  if (platform() === "linux") {
+-    const wayland = await command("wl-paste", ["-t", "image/png"]).catch(() => Buffer.alloc(0))
+-    if (wayland.length) return { data: wayland.toString("base64"), mime: "image/png" }
+-    const x11 = await command("xclip", ["-selection", "clipboard", "-t", "image/png", "-o"]).catch(() =>
+-      Buffer.alloc(0),
+-    )
+-    if (x11.length) return { data: x11.toString("base64"), mime: "image/png" }
+-  }
+-
+-  const { default: clipboardy } = await import("clipboardy")
+-  const text = await clipboardy.read().catch(() => undefined)
+-  if (text) return { data: text, mime: "text/plain" }
++  const text = await command("termux-clipboard-get").catch(() => Buffer.alloc(0))
++  if (text.length) return { data: text.toString(), mime: "text/plain" }
+ }
+ 
+-export function copyCommand(
+-  os: NodeJS.Platform,
+-  wayland: boolean,
+-  has: (name: string) => boolean,
+-): string[] | undefined {
+-  if (os === "darwin" && has("osascript")) return ["osascript"]
+-  if (os === "linux" && wayland && has("wl-copy")) return ["wl-copy"]
+-  if (os === "linux" && has("xclip")) return ["xclip", "-selection", "clipboard"]
+-  if (os === "linux" && has("xsel")) return ["xsel", "--clipboard", "--input"]
+-  if (os === "win32" && has("powershell.exe")) {
+-    return [
+-      "powershell.exe",
+-      "-NonInteractive",
+-      "-NoProfile",
+-      "-Command",
+-      "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+-    ]
+-  }
++export function copyCommand(has: (name: string) => boolean): string[] | undefined {
++  if (has("termux-clipboard-set")) return ["termux-clipboard-set"]
+ }
+ 
+ let copyMethod: Promise<(text: string) => Promise<void>> | undefined
+@@ -99,22 +35,13 @@ let copyMethod: Promise<(text: string) => Promise<void>> | undefined
+ function getCopyMethod() {
+   return (copyMethod ??= (async () => {
+     const { which } = await import("@opencode-ai/core/util/which")
+-    const native = copyCommand(platform(), Boolean(process.env.WAYLAND_DISPLAY), (name) => Boolean(which(name)))
+-    if (native?.[0] === "osascript") {
+-      return async (text: string) => {
+-        const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+-        await command("osascript", ["-e", `set the clipboard to "${escaped}"`]).catch(() => undefined)
+-      }
+-    }
++    const native = copyCommand((name) => Boolean(which(name)))
+     if (native) {
+       return async (text: string) => {
+         await command(native[0], native.slice(1), text).catch(() => undefined)
+       }
+     }
+-    return async (text: string) => {
+-      const { default: clipboardy } = await import("clipboardy")
+-      await clipboardy.write(text).catch(() => undefined)
+-    }
++    return async () => undefined
+   })())
+ }
+ 
+diff --git a/packages/tui/src/component/dialog-update.tsx b/packages/tui/src/component/dialog-update.tsx
+deleted file mode 100644
+index 3b66249..0000000
+--- a/packages/tui/src/component/dialog-update.tsx
++++ /dev/null
+@@ -1,192 +0,0 @@
+-import { TextAttributes } from "@opentui/core"
+-import { createEffect, createMemo, createResource, createSignal, For, Match, Show, Switch } from "solid-js"
+-import { useTheme } from "../context/theme"
+-import { isVersionGreater, type UpdateState, type UpdateTarget } from "../context/update-notification"
+-import { useDialog } from "../ui/dialog"
+-import { useBindings } from "../keymap"
+-import { errorMessage } from "../util/error"
+-import { Spinner } from "./spinner"
+-import { openUrl } from "@opencode-ai/core/open"
+-
+-export const V2_ANNOUNCEMENT_URL = "https://anoma.ly/notes/opencode-2-0"
+-
+-type Version = { current: string; latest?: string }
+-
+-// A newer OpenCode 1 release uses the normal update flow; OpenCode 2.0 is only offered when OpenCode 1 is current.
+-export function updateTarget(version: Version): UpdateTarget {
+-  if (version.latest && isUpdate(version.current, version.latest)) return { type: "latest", version: version.latest }
+-  return { type: "major" }
+-}
+-
+-// Only a newer release in the installed major version is a normal update. OpenCode 2 has its own offer.
+-export function isUpdate(current: string, latest: string) {
+-  const major = (value: string) => value.replace(/^v/, "").split(".")[0]
+-  return major(latest) === major(current) && isVersionGreater(latest, current)
+-}
+-
+-export function DialogUpdate(props: {
+-  check: () => Promise<Version | undefined>
+-  state: () => UpdateState | undefined
+-  install: (target: UpdateTarget) => Promise<void>
+-  skip: (version: string) => void
+-  dismiss: () => void
+-  restart: () => void
+-}) {
+-  const dialog = useDialog()
+-  const { theme } = useTheme()
+-  const [error, setError] = createSignal<string>()
+-  const [active, setActive] = createSignal(0)
+-  const [check] = createResource(() =>
+-    props.check().catch((error: unknown) => {
+-      setError(errorMessage(error))
+-      return undefined
+-    }),
+-  )
+-
+-  const target = () => {
+-    const version = check()
+-    if (!version?.latest) return undefined
+-    return updateTarget(version)
+-  }
+-  const state = createMemo(() => {
+-    const current = props.state()
+-    if (current?.type === "installing" || current?.type === "installed") return current
+-    if (check.loading) return { type: "checking" as const }
+-    if (current?.type === "failed") return current
+-    const next = target()
+-    if (!next) return { type: "check-failed" as const, message: error() ?? "Couldn't check for updates." }
+-    if (next.type === "major") return { type: "major" as const }
+-    return { type: "available" as const, version: next.version }
+-  })
+-  const buttons = createMemo(() => {
+-    const current = state()
+-    if (current.type === "checking" || current.type === "installing") return []
+-    const next = target()
+-    const close = {
+-      label: next?.type === "major" ? "Dismiss" : "Skip",
+-      run: () => {
+-        if (current.type !== "installed" && next?.type === "major") props.dismiss()
+-        if (current.type !== "installed" && next?.type === "latest") props.skip(next.version)
+-        dialog.clear()
+-      },
+-    }
+-    if (current.type === "installed") return [close, { label: "Restart", run: props.restart }]
+-    if (!next) return [close]
+-    return [close, { label: next.type === "major" ? "Upgrade" : "Update", run: () => props.install(next) }]
+-  })
+-
+-  createEffect(() => setActive(Math.max(0, buttons().length - 1)))
+-
+-  const move = (offset: number) => {
+-    const count = buttons().length
+-    if (count) setActive((value) => (value + offset + count) % count)
+-  }
+-
+-  useBindings(() => ({
+-    bindings: [
+-      { key: "return", desc: "Confirm update action", group: "Dialog", cmd: () => void buttons()[active()]?.run() },
+-      { key: "left", desc: "Previous update action", group: "Dialog", cmd: () => move(-1) },
+-      { key: "shift+tab", desc: "Previous update action", group: "Dialog", cmd: () => move(-1) },
+-      { key: "right", desc: "Next update action", group: "Dialog", cmd: () => move(1) },
+-      { key: "tab", desc: "Next update action", group: "Dialog", cmd: () => move(1) },
+-    ],
+-  }))
+-
+-  return (
+-    <box paddingLeft={2} paddingRight={2} gap={1}>
+-      <box flexDirection="row" justifyContent="space-between">
+-        <text attributes={TextAttributes.BOLD} fg={theme.text}>
+-          {state().type === "installing"
+-            ? "Updating OpenCode"
+-            : state().type === "available" || state().type === "major" || state().type === "failed"
+-              ? "Update available"
+-              : "Update"}
+-        </text>
+-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+-          esc
+-        </text>
+-      </box>
+-      <box paddingBottom={1} gap={1}>
+-        <Show when={state()} keyed>
+-          {(current) => (
+-            <Switch>
+-              <Match when={current.type === "checking"}>
+-                <Spinner color={theme.text}>Checking for updates…</Spinner>
+-              </Match>
+-              <Match when={current.type === "available"}>
+-                <text fg={theme.textMuted} wrapMode="word">
+-                  An update is available. After installing, you'll be prompted to restart OpenCode.
+-                </text>
+-              </Match>
+-              <Match when={current.type === "installing" && current} keyed>
+-                {(installing) => (
+-                  <Spinner color={theme.text}>
+-                    {installing.target.type === "major"
+-                      ? "Installing OpenCode 2.0…"
+-                      : `Installing OpenCode ${installing.target.version}…`}
+-                  </Spinner>
+-                )}
+-              </Match>
+-              <Match when={current.type === "installed" && current} keyed>
+-                {(installed) => (
+-                  <text fg={theme.textMuted} wrapMode="word">
+-                    {installed.target.type === "major"
+-                      ? "Update successful! A restart is required. Run `opencode` to start OpenCode 2.0."
+-                      : "Update successful! A restart is required."}
+-                  </text>
+-                )}
+-              </Match>
+-              <Match when={current.type === "major"}>
+-                <box gap={1}>
+-                  <box>
+-                    <text fg={theme.textMuted} wrapMode="word">
+-                      OpenCode 2.0 is the next major release.
+-                    </text>
+-                    <text
+-                      fg={theme.textMuted}
+-                      wrapMode="word"
+-                      onMouseUp={() => {
+-                        openUrl(V2_ANNOUNCEMENT_URL).catch(() => {})
+-                      }}
+-                    >
+-                      Read more about it:{" "}
+-                      <a href={V2_ANNOUNCEMENT_URL} style={{ fg: theme.primary }}>
+-                        {V2_ANNOUNCEMENT_URL}
+-                      </a>
+-                    </text>
+-                  </box>
+-                  <text fg={theme.textMuted} wrapMode="word">
+-                    It contains some breaking changes.
+-                  </text>
+-                </box>
+-              </Match>
+-              <Match when={(current.type === "failed" || current.type === "check-failed") && current} keyed>
+-                {(failed) => (
+-                  <text fg={theme.error} wrapMode="word">
+-                    {failed.message}
+-                  </text>
+-                )}
+-              </Match>
+-            </Switch>
+-          )}
+-        </Show>
+-      </box>
+-      <Show when={buttons().length > 0}>
+-        <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
+-          <For each={buttons()}>
+-            {(button, index) => (
+-              <box
+-                paddingLeft={1}
+-                paddingRight={1}
+-                backgroundColor={active() === index() ? theme.primary : undefined}
+-                onMouseUp={() => void button.run()}
+-              >
+-                <text fg={active() === index() ? theme.selectedListItemText : theme.textMuted}>{button.label}</text>
+-              </box>
+-            )}
+-          </For>
+-        </box>
+-      </Show>
+-    </box>
+-  )
+-}
+diff --git a/packages/tui/src/component/prompt/index.tsx b/packages/tui/src/component/prompt/index.tsx
+index c48c751..886bff9 100644
+--- a/packages/tui/src/component/prompt/index.tsx
++++ b/packages/tui/src/component/prompt/index.tsx
+@@ -17,7 +17,7 @@ import { useLocal } from "../../context/local"
+ import { Flag } from "@opencode-ai/core/flag/flag"
+ import { tint, useTheme } from "../../context/theme"
+ import { EmptyBorder, SplitBorder } from "../../ui/border"
+-import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
++import { useTuiPaths } from "../../context/runtime"
+ import { useClipboard } from "../../context/clipboard"
+ import { Spinner } from "../spinner"
+ import { useSDK } from "../../context/sdk"
+@@ -75,14 +75,13 @@ export type PromptProps = {
+   }
+ }
+ 
+-function pastedFilepath(value: string, platform: string) {
++function pastedFilepath(value: string) {
+   const raw = value.replace(/^['"]+|['"]+$/g, "")
+   if (raw.startsWith("file://")) {
+     try {
+       return fileURLToPath(raw)
+     } catch {}
+   }
+-  if (platform === "win32") return raw
+   return raw.replace(/\\(.)/g, "$1")
+ }
+ 
+@@ -150,7 +149,6 @@ export function Prompt(props: PromptProps) {
+   const args = useArgs()
+   const paths = useTuiPaths()
+   const location = useLocation()
+-  const terminalEnvironment = useTuiTerminalEnvironment()
+   const clipboard = useClipboard()
+   const sdk = useSDK()
+   const editor = useEditorContext()
+@@ -1183,7 +1181,7 @@ export function Prompt(props: PromptProps) {
+   async function pasteInputText(text: string) {
+     const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+     const pastedContent = normalizedText.trim()
+-    const filepath = pastedFilepath(pastedContent, terminalEnvironment.platform)
++    const filepath = pastedFilepath(pastedContent)
+     const isUrl = /^(https?):\/\//.test(filepath)
+     if (!isUrl) {
+       const attachment = await readLocalAttachment(filepath)
+@@ -1399,14 +1397,12 @@ export function Prompt(props: PromptProps) {
+                   return
+                 }
+ 
+-                // Normalize line endings at the boundary
+-                // Windows ConPTY/Terminal often sends CR-only newlines in bracketed paste
+-                // Replace CRLF first, then any remaining CR
++                // Normalize line endings at the boundary; some terminals send
++                // CR-only newlines in bracketed paste. Replace CRLF first.
+                 const normalizedText = decodePasteBytes(event.bytes).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+                 const pastedContent = normalizedText.trim()
+ 
+-                // Windows Terminal <1.25 can surface image-only clipboard as an
+-                // empty bracketed paste. Windows Terminal 1.25+ does not.
++                // An image-only clipboard can surface as an empty bracketed paste.
+                 if (!pastedContent) {
+                   keymap.dispatchCommand("prompt.paste")
+                   return
+diff --git a/packages/tui/src/context/runtime.tsx b/packages/tui/src/context/runtime.tsx
+index 281049f..827e2a6 100644
+--- a/packages/tui/src/context/runtime.tsx
++++ b/packages/tui/src/context/runtime.tsx
+@@ -7,19 +7,12 @@ export type TuiPaths = Readonly<{
+   worktree: string
+ }>
+ 
+-export type TuiTerminalEnvironment = Readonly<{
+-  platform: string
+-  multiplexer?: "tmux" | "screen"
+-  displayServer?: "wayland" | "x11"
+-}>
+-
+ export type TuiStartup = Readonly<{
+   initialRoute?: unknown
+   skipInitialLoading: boolean
+ }>
+ 
+ const PathsContext = createContext<TuiPaths>()
+-const TerminalEnvironmentContext = createContext<TuiTerminalEnvironment>()
+ const StartupContext = createContext<TuiStartup>()
+ 
+ function provider<T>(context: ReturnType<typeof createContext<T>>, value: T, children: () => JSX.Element) {
+@@ -35,10 +28,6 @@ export function TuiPathsProvider(props: { value: TuiPaths; children: JSX.Element
+   return provider(PathsContext, props.value, () => props.children)
+ }
+ 
+-export function TuiTerminalEnvironmentProvider(props: { value: TuiTerminalEnvironment; children: JSX.Element }) {
+-  return provider(TerminalEnvironmentContext, props.value, () => props.children)
+-}
+-
+ export function TuiStartupProvider(props: { value: TuiStartup; children: JSX.Element }) {
+   return provider(StartupContext, props.value, () => props.children)
+ }
+@@ -53,10 +42,6 @@ export function useTuiPaths() {
+   return required(PathsContext, "TuiPathsProvider")
+ }
+ 
+-export function useTuiTerminalEnvironment() {
+-  return required(TerminalEnvironmentContext, "TuiTerminalEnvironmentProvider")
+-}
+-
+ export function useTuiStartup() {
+   return required(StartupContext, "TuiStartupProvider")
+ }
+diff --git a/packages/tui/src/context/update-notification.tsx b/packages/tui/src/context/update-notification.tsx
+deleted file mode 100644
+index 22f181a..0000000
+--- a/packages/tui/src/context/update-notification.tsx
++++ /dev/null
+@@ -1,132 +0,0 @@
+-import { createMemo, createSignal, onCleanup, onMount } from "solid-js"
+-import { createSimpleContext } from "./helper"
+-import { useKV } from "./kv"
+-import { useExit } from "./exit"
+-import { useDialog } from "../ui/dialog"
+-import { errorMessage } from "../util/error"
+-import { DialogUpdate } from "../component/dialog-update"
+-
+-export type UpdateTarget = { readonly type: "latest"; readonly version: string } | { readonly type: "major" }
+-
+-export type UpdateState =
+-  | { readonly type: "installing"; readonly target: UpdateTarget }
+-  | { readonly type: "installed"; readonly target: UpdateTarget }
+-  | { readonly type: "failed"; readonly target: UpdateTarget; readonly message: string }
+-
+-// A newer OpenCode 1 release wins; OpenCode 2.0 is only suggested once OpenCode 1 is up to date.
+-export type UpdateNotice = { readonly type: "available"; readonly version: string } | { readonly type: "major" }
+-
+-// Implemented by the CLI process so checks and installs run against this machine's installation.
+-export type UpdateSource = {
+-  readonly subscribe: (notify: (notice: UpdateNotice) => void) => () => void
+-  readonly check: () => Promise<{ readonly current: string; readonly latest?: string }>
+-  readonly apply: (target: UpdateTarget) => Promise<void>
+-}
+-
+-export const DISMISS_DURATION = 7 * 24 * 60 * 60 * 1000
+-
+-// Skipping an OpenCode 1 version hides it until a newer one ships; dismissing the OpenCode 2.0 offer hides it for a week.
+-export function visibleNotice(
+-  notice: UpdateNotice | undefined,
+-  hidden: { readonly skippedVersion?: string; readonly dismissedUntil?: number },
+-  now: number,
+-) {
+-  if (!notice) return undefined
+-  if (notice.type === "major")
+-    return hidden.dismissedUntil !== undefined && now < hidden.dismissedUntil ? undefined : notice
+-  if (hidden.skippedVersion && !isVersionGreater(notice.version, hidden.skippedVersion)) return undefined
+-  return notice
+-}
+-
+-export const MAJOR_INSTRUCTIONS = "https://opencode.ai/v2/docs"
+-
+-export const { use: useUpdateNotification, provider: UpdateNotificationProvider } = createSimpleContext({
+-  name: "UpdateNotification",
+-  init: (props: { updater?: UpdateSource }) => {
+-    const kv = useKV()
+-    const dialog = useDialog()
+-    const exit = useExit()
+-    const [available, setAvailable] = createSignal<UpdateNotice>()
+-    const [state, setState] = createSignal<UpdateState>()
+-    const [now, setNow] = createSignal(Date.now())
+-    const clock = setInterval(() => setNow(Date.now()), 10 * 60 * 1000)
+-    onCleanup(() => clearInterval(clock))
+-
+-    // Checks only announce a version. Installing always goes through /update.
+-    onMount(() => {
+-      if (!props.updater) return
+-      onCleanup(props.updater.subscribe(setAvailable))
+-    })
+-
+-    const notification = createMemo(() => {
+-      const current = state()
+-      if (current?.type === "installed") return current
+-      return visibleNotice(
+-        available(),
+-        { skippedVersion: kv.get("skipped_version"), dismissedUntil: kv.get("update_dismissed_until") },
+-        now(),
+-      )
+-    })
+-
+-    const install = async (target: UpdateTarget) => {
+-      const updater = props.updater
+-      if (!updater || state()?.type === "installing") return
+-      setState({ type: "installing", target })
+-      await updater.apply(target).then(
+-        () => setState({ type: "installed", target }),
+-        (error: unknown) => {
+-          const message = errorMessage(error)
+-          setState({
+-            type: "failed",
+-            target,
+-            message:
+-              target.type === "major" && !message.includes(MAJOR_INSTRUCTIONS)
+-                ? `${message}\nTo install OpenCode 2.0 manually, see ${MAJOR_INSTRUCTIONS}`
+-                : message,
+-          })
+-        },
+-      )
+-    }
+-
+-    const open = () => {
+-      const updater = props.updater
+-      if (!updater) return
+-      dialog.replace(() => (
+-        <DialogUpdate
+-          check={updater.check}
+-          state={state}
+-          install={install}
+-          skip={(version) => kv.set("skipped_version", version)}
+-          dismiss={() => {
+-            const at = Date.now()
+-            kv.set("update_dismissed_until", at + DISMISS_DURATION)
+-            setNow(at)
+-          }}
+-          restart={() => exit()}
+-        />
+-      ))
+-    }
+-
+-    return {
+-      notification,
+-      open: props.updater ? open : undefined,
+-    }
+-  },
+-})
+-
+-export function isVersionGreater(left: string, right: string) {
+-  const parse = (value: string) => {
+-    const [core, prerelease] = value.replace(/^v/, "").split("-", 2)
+-    return { core: core.split(".").map((part) => Number.parseInt(part, 10) || 0), prerelease }
+-  }
+-  const a = parse(left)
+-  const b = parse(right)
+-  for (let index = 0; index < Math.max(a.core.length, b.core.length); index++) {
+-    const difference = (a.core[index] ?? 0) - (b.core[index] ?? 0)
+-    if (difference) return difference > 0
+-  }
+-  if (a.prerelease === b.prerelease) return false
+-  if (!a.prerelease) return true
+-  if (!b.prerelease) return false
+-  return a.prerelease.localeCompare(b.prerelease, undefined, { numeric: true }) > 0
+-}
+diff --git a/packages/tui/src/editor.ts b/packages/tui/src/editor.ts
+index 68afba6..e0aabd9 100644
+--- a/packages/tui/src/editor.ts
++++ b/packages/tui/src/editor.ts
+@@ -36,7 +36,7 @@ export async function openEditor(input: { value: string; renderer: CliRenderer;
+       const child = spawn(parts[0]!, [...parts.slice(1), file], {
+         cwd: input.cwd && existsSync(input.cwd) ? input.cwd : process.cwd(),
+         stdio: [input.stdin ?? "inherit", "inherit", "inherit"],
+-        shell: process.platform === "win32",
++        shell: false,
+       })
+       child.on("error", reject)
+       child.on("exit", (code, signal) => {
+diff --git a/packages/tui/src/feature-plugins/home/tips-view.tsx b/packages/tui/src/feature-plugins/home/tips-view.tsx
+index c7ef5c8..c678968 100644
+--- a/packages/tui/src/feature-plugins/home/tips-view.tsx
++++ b/packages/tui/src/feature-plugins/home/tips-view.tsx
+@@ -134,7 +134,7 @@ export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
+   }
+   const tip = createMemo(() => {
+     if (props.connected === false) return NO_MODELS_TIP
+-    const tips = [...TIPS, process.platform !== "win32" ? TERMINAL_SUSPEND_TIP : INPUT_UNDO_TIP].flatMap((item) => {
++    const tips = [...TIPS, TERMINAL_SUSPEND_TIP].flatMap((item) => {
+       const value = typeof item === "string" ? item : item(shortcuts)
+       return value ? [value] : []
+     })
+@@ -278,6 +278,5 @@ const TIPS: Tip[] = [
+   "Use {highlight}/rename{/highlight} to rename the current session",
+ ]
+ 
+-const INPUT_UNDO_TIP: Tip = (shortcuts) => press(shortcuts.inputUndo(), "to undo changes in your prompt")
+ const TERMINAL_SUSPEND_TIP: Tip = (shortcuts) =>
+   press(shortcuts.terminalSuspend(), "to suspend the terminal and return to your shell")
+diff --git a/packages/tui/src/index.tsx b/packages/tui/src/index.tsx
+index 1478094..722c2ba 100644
+--- a/packages/tui/src/index.tsx
++++ b/packages/tui/src/index.tsx
+@@ -1,2 +1 @@
+ export { run, type TuiInput } from "./app"
+-export type { UpdateNotice, UpdateSource } from "./context/update-notification"
+diff --git a/packages/tui/src/routes/home.tsx b/packages/tui/src/routes/home.tsx
+index 7b1bff0..84fd1e0 100644
+--- a/packages/tui/src/routes/home.tsx
++++ b/packages/tui/src/routes/home.tsx
+@@ -12,7 +12,6 @@ import { useEditorContext } from "../context/editor"
+ import { useTerminalDimensions } from "@opentui/solid"
+ import { useTuiConfig } from "../config"
+ import { HomeSessionDestinationProvider } from "./home/session-destination"
+-import { useUpdateNotification } from "../context/update-notification"
+ import { useTheme } from "../context/theme"
+ import { useExit } from "../context/exit"
+ 
+@@ -87,7 +86,6 @@ export function Home() {
+           </pluginRuntime.Slot>
+         </box>
+         <box height={1} minHeight={0} flexShrink={1} />
+-        <UpdateNotification width={logoWidth()} />
+         <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
+           <pluginRuntime.Slot name="home_prompt" mode="replace" ref={bind}>
+             <Prompt ref={bind} right={<pluginRuntime.Slot name="home_prompt_right" />} placeholders={placeholder} />
+@@ -104,46 +102,3 @@ export function Home() {
+   )
+ }
+ 
+-function UpdateNotification(props: { width: number }) {
+-  const update = useUpdateNotification()
+-  const exit = useExit()
+-  const { theme } = useTheme()
+-  const [hovered, setHovered] = createSignal(false)
+-  createEffect(() => {
+-    update.notification()
+-    setHovered(false)
+-  })
+-
+-  return (
+-    <Show when={update.notification()} keyed>
+-      {(state) => (
+-        <box
+-          flexShrink={0}
+-          flexDirection="row"
+-          justifyContent="center"
+-          width={props.width}
+-          maxWidth="100%"
+-          gap={1}
+-          backgroundColor={hovered() ? theme.backgroundElement : undefined}
+-          onMouseOver={() => setHovered(true)}
+-          onMouseOut={() => setHovered(false)}
+-          onMouseUp={() => {
+-            if (state.type === "installed") return exit()
+-            update.open?.()
+-          }}
+-        >
+-          <text fg={theme.textMuted}>
+-            <span style={{ fg: theme.primary }}>{state.type === "installed" ? "/exit" : "/update"}</span>
+-            {state.type === "available"
+-              ? ` to install v${state.version}`
+-              : state.type === "major"
+-                ? " to upgrade to OpenCode 2.0"
+-                : state.target.type === "major"
+-                  ? " restart to use OpenCode 2.0"
+-                  : ` restart to use v${state.target.version}`}
+-          </text>
+-        </box>
+-      )}
+-    </Show>
+-  )
+-}
+diff --git a/packages/tui/src/routes/session/index.tsx b/packages/tui/src/routes/session/index.tsx
+index e1f554f..fbf5b54 100644
+--- a/packages/tui/src/routes/session/index.tsx
++++ b/packages/tui/src/routes/session/index.tsx
+@@ -21,7 +21,7 @@ import { useProject } from "../../context/project"
+ import { useSync } from "../../context/sync"
+ import { useEvent } from "../../context/event"
+ import { SplitBorder } from "../../ui/border"
+-import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
++import { useTuiPaths } from "../../context/runtime"
+ import { Spinner } from "../../component/spinner"
+ import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
+ import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
+@@ -62,7 +62,6 @@ import { useKV } from "../../context/kv.tsx"
+ import stripAnsi from "strip-ansi"
+ import { usePromptRef } from "../../context/prompt"
+ import { useEpilogue } from "../../context/epilogue"
+-import { normalizePath } from "../../util/path"
+ import { PermissionPrompt } from "./permission"
+ import { QuestionPrompt } from "./question"
+ import { DialogExportOptions } from "../../ui/dialog-export-options"
+@@ -2517,12 +2516,8 @@ function Skill(props: ToolProps) {
+ 
+ function Diagnostics(props: { diagnostics: unknown; filePath: string }) {
+   const { theme } = useTheme()
+-  const terminalEnvironment = useTuiTerminalEnvironment()
+   const errors = createMemo(() => {
+-    const normalized = normalizePath(
+-      typeof props.filePath === "string" ? props.filePath : "",
+-      terminalEnvironment.platform,
+-    )
++    const normalized = typeof props.filePath === "string" ? props.filePath : ""
+     return parseDiagnostics(props.diagnostics, normalized)
+   })
+ 
+diff --git a/packages/tui/src/terminal-win32.ts b/packages/tui/src/terminal-win32.ts
+deleted file mode 100644
+index 1aaa80a..0000000
+--- a/packages/tui/src/terminal-win32.ts
++++ /dev/null
+@@ -1,130 +0,0 @@
+-import { dlopen, ptr } from "bun:ffi"
+-import type { ReadStream } from "node:tty"
+-
+-const STD_INPUT_HANDLE = -10
+-const ENABLE_PROCESSED_INPUT = 0x0001
+-
+-const kernel = () =>
+-  dlopen("kernel32.dll", {
+-    GetStdHandle: { args: ["i32"], returns: "ptr" },
+-    GetConsoleMode: { args: ["ptr", "ptr"], returns: "i32" },
+-    SetConsoleMode: { args: ["ptr", "u32"], returns: "i32" },
+-    FlushConsoleInputBuffer: { args: ["ptr"], returns: "i32" },
+-  })
+-
+-let k32: ReturnType<typeof kernel> | undefined
+-
+-function load() {
+-  if (process.platform !== "win32") return false
+-  try {
+-    k32 ??= kernel()
+-    return true
+-  } catch {
+-    return false
+-  }
+-}
+-
+-/**
+- * Clear ENABLE_PROCESSED_INPUT on the console stdin handle.
+- */
+-export function win32DisableProcessedInput() {
+-  if (process.platform !== "win32") return
+-  if (!process.stdin.isTTY) return
+-  if (!load()) return
+-
+-  const handle = k32!.symbols.GetStdHandle(STD_INPUT_HANDLE)
+-  const buf = new Uint32Array(1)
+-  if (k32!.symbols.GetConsoleMode(handle, ptr(buf)) === 0) return
+-
+-  const mode = buf[0]!
+-  if ((mode & ENABLE_PROCESSED_INPUT) === 0) return
+-  k32!.symbols.SetConsoleMode(handle, mode & ~ENABLE_PROCESSED_INPUT)
+-}
+-
+-/**
+- * Discard any queued console input (mouse events, key presses, etc.).
+- */
+-export function win32FlushInputBuffer() {
+-  if (process.platform !== "win32") return
+-  if (!process.stdin.isTTY) return
+-  if (!load()) return
+-
+-  const handle = k32!.symbols.GetStdHandle(STD_INPUT_HANDLE)
+-  k32!.symbols.FlushConsoleInputBuffer(handle)
+-}
+-
+-let unhook: (() => void) | undefined
+-
+-/**
+- * Keep ENABLE_PROCESSED_INPUT disabled.
+- *
+- * On Windows, Ctrl+C becomes a CTRL_C_EVENT (instead of stdin input) when
+- * ENABLE_PROCESSED_INPUT is set. Various runtimes can re-apply console modes
+- * (sometimes on a later tick), and the flag is console-global, not per-process.
+- *
+- * We combine:
+- * - A `setRawMode(...)` hook to re-clear after known raw-mode toggles.
+- * - A low-frequency poll as a backstop for native/external mode changes.
+- */
+-export function win32InstallCtrlCGuard() {
+-  if (process.platform !== "win32") return
+-  if (!process.stdin.isTTY) return
+-  if (!load()) return
+-  if (unhook) return unhook
+-
+-  const stdin = process.stdin as ReadStream
+-  const original = stdin.setRawMode
+-
+-  const handle = k32!.symbols.GetStdHandle(STD_INPUT_HANDLE)
+-  const buf = new Uint32Array(1)
+-
+-  if (k32!.symbols.GetConsoleMode(handle, ptr(buf)) === 0) return
+-  const initial = buf[0]!
+-
+-  const enforce = () => {
+-    if (k32!.symbols.GetConsoleMode(handle, ptr(buf)) === 0) return
+-    const mode = buf[0]!
+-    if ((mode & ENABLE_PROCESSED_INPUT) === 0) return
+-    k32!.symbols.SetConsoleMode(handle, mode & ~ENABLE_PROCESSED_INPUT)
+-  }
+-
+-  // Some runtimes can re-apply console modes on the next tick; enforce twice.
+-  const later = () => {
+-    enforce()
+-    setImmediate(enforce)
+-  }
+-
+-  let wrapped: ReadStream["setRawMode"] | undefined
+-
+-  if (typeof original === "function") {
+-    wrapped = (mode: boolean) => {
+-      const result = original.call(stdin, mode)
+-      later()
+-      return result
+-    }
+-
+-    stdin.setRawMode = wrapped
+-  }
+-
+-  // Ensure it's cleared immediately too (covers any earlier mode changes).
+-  later()
+-
+-  const interval = setInterval(enforce, 100)
+-  interval.unref()
+-
+-  let done = false
+-  unhook = () => {
+-    if (done) return
+-    done = true
+-
+-    clearInterval(interval)
+-    if (wrapped && stdin.setRawMode === wrapped) {
+-      stdin.setRawMode = original
+-    }
+-
+-    k32!.symbols.SetConsoleMode(handle, initial)
+-    unhook = undefined
+-  }
+-
+-  return unhook
+-}
+diff --git a/packages/tui/src/util/filetype.ts b/packages/tui/src/util/filetype.ts
+index 16a89bc..f0fc15c 100644
+--- a/packages/tui/src/util/filetype.ts
++++ b/packages/tui/src/util/filetype.ts
+@@ -72,8 +72,6 @@ export const LANGUAGE_EXTENSIONS: Record<string, string> = {
+   ".pm": "perl",
+   ".pm6": "perl6",
+   ".php": "php",
+-  ".ps1": "powershell",
+-  ".psm1": "powershell",
+   ".pug": "jade",
+   ".jade": "jade",
+   ".py": "python",
+diff --git a/packages/tui/src/util/path.ts b/packages/tui/src/util/path.ts
+deleted file mode 100644
+index 7b30c2e..0000000
+--- a/packages/tui/src/util/path.ts
++++ /dev/null
+@@ -1,12 +0,0 @@
+-import { realpathSync } from "node:fs"
+-import { win32 } from "node:path"
+-
+-export function normalizePath(input: string, platform: string) {
+-  if (platform !== "win32") return input
+-  const resolved = win32.normalize(win32.resolve(input.replaceAll("/", "\\")))
+-  try {
+-    return realpathSync.native(resolved)
+-  } catch {
+-    return resolved
+-  }
+-}
+diff --git a/packages/tui/src/util/system.ts b/packages/tui/src/util/system.ts
+index f55848b..9e59cfd 100644
+--- a/packages/tui/src/util/system.ts
++++ b/packages/tui/src/util/system.ts
+@@ -1,15 +1,7 @@
+ import { release } from "node:os"
+ 
+ export function describeOS() {
+-  const name =
+-    process.platform === "darwin"
+-      ? "macOS"
+-      : process.platform === "win32"
+-        ? "Windows"
+-        : process.platform === "linux"
+-          ? "Linux"
+-          : process.platform
+-  return `${name} ${release()} (${process.arch})`
++  return `Android ${release()} (${process.arch})`
+ }
+ 
+ export function describeTerminal() {

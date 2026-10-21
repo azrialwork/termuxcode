@@ -136,9 +136,14 @@ trimmed build must respect.
 
 Both profiles are built from the same upstream tree; every build uploads a Bun
 bundle map (`metafile-<profile>-<arch>`) that lists every module and its bytes.
-The slim profile is Termux-only: `patches/slim/` drops the install methods for
-other distros along with the `upgrade` and `uninstall` commands, it builds a
-single `aarch64` `.deb`, and it ships no portable tarball.
+The slim profile is Termux-only: `patches/slim/` removes every path that serves
+another OS or another install channel. That covers the `upgrade`/`uninstall`
+commands, the whole self-update machinery (installation detection, update check
+and `/update` dialog), macOS managed preferences, Windows/macOS/WSL code paths in
+the shell tool, LSP downloads, clipboard, terminal guards and path handling, and
+the `open` dependency. Non-Termux binaries and asset names are gone, so a slim
+build cannot fall back to another platform. It builds a single `aarch64` `.deb`
+and ships no portable tarball.
 
 ## Limitations
 

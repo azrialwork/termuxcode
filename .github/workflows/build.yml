@@ -333,13 +333,38 @@ jobs:
           bytes=$(jq '[.outputs | to_entries[] | .value.bytes] | add' "$file")
           test "$count" -gt 0
           if [ "${{ matrix.profile }}" = "slim" ]; then
-            for module in cli/cmd/uninstall.ts cli/cmd/upgrade.ts; do
-              if jq -r '.inputs | keys[]' "$file" | grep -q "$module"; then
-                echo "module still bundled: $module" >&2
-                exit 1
-              fi
+            modules=$(jq -r '.inputs | keys[]' "$file")
+            for module in \
+              cli/cmd/uninstall.ts \
+              cli/cmd/upgrade.ts \
+              cli/upgrade.ts \
+              installation/index.ts \
+              config/managed.ts \
+              context/update-notification.tsx \
+              component/dialog-update.tsx \
+              terminal-win32.ts \
+              util/path.ts; do
+              case "$modules" in
+                *"$module"*)
+                  echo "module still bundled: $module" >&2
+                  exit 1
+                  ;;
+              esac
             done
-            jq -r '.inputs | keys[]' "$file" | grep -q 'cli/cmd/tui.ts'
+            case "$modules" in
+              *"cli/cmd/tui.ts"*) ;;
+              *)
+                echo "cli/cmd/tui.ts missing from slim bundle" >&2
+                exit 1
+                ;;
+            esac
+            case "$modules" in
+              *"tool/shell/prompt.ts"*) ;;
+              *)
+                echo "tool/shell/prompt.ts missing from slim bundle" >&2
+                exit 1
+                ;;
+            esac
           fi
           echo "modules=$count bytes=$bytes" >> "$GITHUB_STEP_SUMMARY"
 
