@@ -101,6 +101,9 @@ jobs:
           test -x "$linker"
           export "CARGO_TARGET_${upper}_LINKER=$linker"
           export "CARGO_TARGET_${upper}_RUSTFLAGS=--cfg rustix_use_libc"
+          cp -r "$GITHUB_WORKSPACE/self/vendor/termios" bun-pty/vendor/termios
+          printf '\n[patch.crates-io]\ntermios = { path = "../vendor/termios" }\n' \
+            >> bun-pty/rust-pty/Cargo.toml
           cargo build --release --manifest-path bun-pty/rust-pty/Cargo.toml --target "$target"
 
       - name: Stage libraries
