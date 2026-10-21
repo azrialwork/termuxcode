@@ -4,9 +4,9 @@ What the compiled JavaScript actually contains, for planning the slim profile.
 Generated from the `metafile-slim-arm64` artifact of run
 [`39662040825`](https://github.com/azrialwork/termuxcode/actions/runs/39662040825)
 (commit `3c83776`). The slim and full binaries of that run were byte-identical,
-so this map describes the full build too. The Termux-only tree (run `39679192560`)
-brought the slim bundle to 32,706,185 B without changing which modules dominate
-it.
+so this map describes the full build too. The Termux-only tree brought the slim
+bundle to 32,706,185 B (run `39679192560`), and the OpenCode-provider-only tree
+(run `39687662382`) to 29,150,240 B, without changing which modules dominate it.
 
 - inputs: 4892 modules
 - outputs: 338 files (entry plus workers)

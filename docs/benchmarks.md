@@ -73,33 +73,35 @@ once such a release exists.
 
 ## Slim, Termux-only tree
 
-Build `1.19.3+slim1` (run `39679192560`, artifact `package-slim-arm64`), measured
-from an extracted `.deb` under a throwaway prefix. The patch now deletes the
-self-update machinery, managed preferences, and every non-Termux branch instead
-of stubbing them.
+Build `1.19.3+slim1` (run `39687662382`, artifact `package-slim-arm64`), measured
+from an extracted `.deb` under a throwaway prefix. The patch deletes the
+self-update machinery, managed preferences, every non-Termux branch, and every
+provider except the OpenCode provider instead of stubbing them.
 
 | metric | full | slim |
 | --- | --- | --- |
-| release `.deb` | 47,617,298 B | 47,525,234 B |
-| installed files | 180.3 MiB | 179.3 MiB |
-| compiled binary | 174,658,760 B | 173,610,184 B |
-| bundle JS | 32,785,795 B | 32,706,185 B |
+| release `.deb` | 47,617,298 B | 46,903,850 B |
+| installed files | 180.3 MiB | 175.4 MiB |
+| compiled binary | 174,658,760 B | 169,546,952 B |
+| bundle JS | 32,785,765 B | 29,150,240 B |
 
-Startup from the extracted package: `--version` 2.02 s, first output 3.44 s, TUI
-first frame 13.69 s on one warm run, in line with the full build's 13.4-14.6 s
-range. Idle PSS was 605.4 MiB, inside the 456-740 MiB spread already observed,
-so it says nothing.
+`--version` from the extracted package prints `1.19.3` in 2.63 s. In an isolated
+`HOME`, `termuxcode models` lists 11 models, all under `opencode`; no other
+provider ID appears. TUI startup and idle memory were not re-measured for this
+build.
 
-The binary delta is exactly 1,048,576 B. Bun pads the single-file executable, so
-that number is alignment, not deleted code; treat the bundle delta (79,610 B) as
-the honest size of the removal. None of the removed modules was imported at boot,
-which is why startup and memory stay inside the noise band. No budget is filled
-in `profiles/slim.env` until a run can be reproduced.
+The binary delta is 5,111,808 B, not the 1,048,576 B alignment step seen in
+earlier builds, so most of it is deleted code. The bundle delta is 3,555,945 B
+against the previous slim build and 3,635,525 B against the full build; the
+provider SDKs account for nearly all of it. No budget is filled in
+`profiles/slim.env` until a run can be reproduced.
 
 The CI bundle-map check fails the slim build if any of `cli/cmd/upgrade.ts`,
 `cli/upgrade.ts`, `installation/index.ts`, `config/managed.ts`,
 `context/update-notification.tsx`, `component/dialog-update.tsx`,
-`terminal-win32.ts` or `util/path.ts` reappears in the slim bundle.
+`terminal-win32.ts`, `util/path.ts`, `plugin/provider/anthropic.ts`,
+`plugin/provider/openai.ts`, `plugin/github-copilot/index.ts`,
+`plugin/cerebras.ts` or `plugin/xai.ts` reappears in the slim bundle.
 
 ## What this says
 
