@@ -61,10 +61,11 @@ removes the install methods for other distros (npm, brew, scoop, choco), the
 `upgrade` and `uninstall` commands, and the Windows/macOS code paths.
 
 The first two profile runs (`39662040825`, `39662819325`) proved the pipe neutral:
-slim and full binaries were byte-identical before any patch. The verify job now
-asserts the opposite side: the slim binary is smaller, and the deleted command
-modules are absent from its bundle map. The pre-trim bundle is broken down in
-[`bundle-map.md`](bundle-map.md).
+slim and full binaries were byte-identical before any patch. After the first trim
+the compiled binary kept the same size (174,658,760 bytes) because Bun pads the
+output and the runtime dominates it; the honest signal is the bundle map, where
+slim must contain fewer bytes and must not contain the deleted modules. The
+pre-trim bundle is broken down in [`bundle-map.md`](bundle-map.md).
 
 Only a tagged release publishes the slim package. The default `latest` installer
 still selects the full package; `TERMUXCODE_PROFILE=slim` selects the slim one

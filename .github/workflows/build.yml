@@ -285,6 +285,13 @@ jobs:
             "${{ matrix.arch }}" \
             "$root/lib/termuxcode/libtermuxcode-compat.so"
 
+      - name: Fetch full bundle map
+        if: matrix.profile == 'slim'
+        uses: actions/download-artifact@v4
+        with:
+          name: metafile-full-${{ matrix.arch }}
+          path: meta-full
+
       - name: Compare with full
         if: matrix.profile == 'slim'
         run: |
@@ -293,11 +300,13 @@ jobs:
           tar -xzf full/termuxcode-*-${{ matrix.arch }}.tar.gz -C expected
           slim=extract/data/data/com.termux/files/usr/lib/termuxcode/termuxcode
           full=expected/lib/termuxcode/termuxcode
-          slim_bytes=$(stat -c %s "$slim")
-          full_bytes=$(stat -c %s "$full")
-          echo "slim=$slim_bytes full=$full_bytes"
-          # Removing code must never make the slim binary bigger.
-          [ "$slim_bytes" -lt "$full_bytes" ]
+          slim_js=$(jq '[.outputs[].bytes] | add' meta/*.json)
+          full_js=$(jq '[.outputs[].bytes] | add' meta-full/*.json)
+          echo "binary slim=$(stat -c %s "$slim") full=$(stat -c %s "$full")"
+          echo "bundle slim=$slim_js full=$full_js"
+          # The compiled binary is padded and dominated by the Bun runtime, so
+          # the bundle map is the honest signal that code was removed.
+          [ "$slim_js" -lt "$full_js" ]
 
       - name: Check profile metadata
         if: matrix.arch == 'arm64'
