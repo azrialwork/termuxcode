@@ -6,7 +6,8 @@ Generated from the `metafile-slim-arm64` artifact of run
 (commit `3c83776`). The slim and full binaries of that run were byte-identical,
 so this map describes the full build too. The Termux-only tree brought the slim
 bundle to 32,706,185 B (run `39679192560`), and the OpenCode-provider-only tree
-(run `39688901845`) to 29,150,240 B, without changing which modules dominate it.
+to 29,150,240 B (run `39688901845`) and 28,920,443 B after the LLM module trim
+(run `39783680349`), without changing which modules dominate it.
 
 - inputs: 4892 modules
 - outputs: 338 files (entry plus workers)
