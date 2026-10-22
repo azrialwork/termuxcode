@@ -1,0 +1,14 @@
+diff --git a/bun.lock b/bun.lock
+index 8978115..f556c79 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -525,9 +525,6 @@
+       "version": "1.19.3",
+       "dependencies": {
+         "@opencode-ai/schema": "workspace:*",
+-        "@smithy/eventstream-codec": "4.2.14",
+-        "@smithy/util-utf8": "4.2.2",
+-        "aws4fetch": "1.0.20",
+         "effect": "catalog:",
+       },
+       "devDependencies": {

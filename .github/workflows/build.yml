@@ -348,7 +348,38 @@ jobs:
               plugin/provider/openai.ts \
               plugin/github-copilot/index.ts \
               plugin/cerebras.ts \
-              plugin/xai.ts; do
+              plugin/xai.ts \
+              plugin/azure.ts \
+              plugin/cloudflare.ts \
+              plugin/codex.ts \
+              plugin/openai-ws.ts \
+              plugin/provider/google.ts \
+              plugin/provider/openrouter.ts \
+              plugin/provider/azure.ts \
+              plugin/provider/groq.ts \
+              plugin/provider/mistral.ts \
+              plugin/provider/xai.ts \
+              ../llm/src/cache-policy.ts \
+              ../llm/src/protocols/anthropic-messages.ts \
+              ../llm/src/protocols/bedrock-converse.ts \
+              ../llm/src/protocols/bedrock-event-stream.ts \
+              ../llm/src/protocols/gemini.ts \
+              ../llm/src/protocols/openai-responses.ts \
+              ../llm/src/protocols/utils/bedrock-auth.ts \
+              ../llm/src/protocols/utils/bedrock-cache.ts \
+              ../llm/src/protocols/utils/bedrock-media.ts \
+              ../llm/src/protocols/utils/cache.ts \
+              ../llm/src/providers/amazon-bedrock.ts \
+              ../llm/src/providers/anthropic.ts \
+              ../llm/src/providers/azure.ts \
+              ../llm/src/providers/cloudflare.ts \
+              ../llm/src/providers/github-copilot.ts \
+              ../llm/src/providers/google.ts \
+              ../llm/src/providers/openai.ts \
+              ../llm/src/providers/openai-compatible-profile.ts \
+              ../llm/src/providers/openai-options.ts \
+              ../llm/src/providers/openrouter.ts \
+              ../llm/src/providers/xai.ts; do
               case "$modules" in
                 *"$module"*)
                   echo "module still bundled: $module" >&2
@@ -370,6 +401,15 @@ jobs:
                 exit 1
                 ;;
             esac
+            for module in provider/transform.ts ../llm/src/protocols/openai-chat.ts; do
+              case "$modules" in
+                *"$module"*) ;;
+                *)
+                  echo "$module missing from slim bundle" >&2
+                  exit 1
+                  ;;
+              esac
+            done
           fi
           echo "modules=$count bytes=$bytes" >> "$GITHUB_STEP_SUMMARY"
 
